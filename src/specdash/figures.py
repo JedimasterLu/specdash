@@ -8,7 +8,7 @@ import numpy as np
 import plotly.graph_objects as go
 from numpy.typing import NDArray
 
-from spectra.processing import Result
+from specdash.processing import Result
 
 FloatArray = NDArray[np.float64]
 

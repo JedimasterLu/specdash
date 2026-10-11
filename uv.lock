@@ -1628,7 +1628,7 @@ wheels = [
 ]
 
 [[package]]
-name = "spectra"
+name = "specdash"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -1,4 +1,4 @@
-"""Command-line entry point: ``spectra``."""
+"""Command-line entry point: ``specdash``."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import threading
 import webbrowser
 from collections.abc import Sequence
 
-from spectra import __version__
+from specdash import __version__
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -20,8 +20,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         The parsed arguments.
     """
     parser = argparse.ArgumentParser(
-        prog="spectra",
-        description="Launch the Spectra web app for processing Andor .asc spectra.",
+        prog="specdash",
+        description="Launch the SpecDash web app for processing Andor .asc spectra.",
     )
     parser.add_argument("--host", default="127.0.0.1", help="Interface to bind (default: 127.0.0.1).")
     parser.add_argument("--port", type=int, default=8050, help="Port to listen on (default: 8050).")
@@ -37,12 +37,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     Args:
         argv: Argument list; ``None`` uses ``sys.argv``.
     """
-    from spectra.app import create_app
+    from specdash.app import create_app
 
     args = parse_args(argv)
     app = create_app()
     url = f"http://{'localhost' if args.host in ('127.0.0.1', '0.0.0.0') else args.host}:{args.port}"
-    print(f"Spectra running at {url}  (Ctrl+C to stop)")
+    print(f"SpecDash running at {url}  (Ctrl+C to stop)")
     if not args.no_browser and not args.debug:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
     app.run(host=args.host, port=args.port, debug=args.debug)

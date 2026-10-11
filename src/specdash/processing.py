@@ -23,7 +23,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.signal import savgol_filter
 
-from spectra.io import AndorSpectrum
+from specdash.io import AndorSpectrum
 
 FloatArray = NDArray[np.float64]
 

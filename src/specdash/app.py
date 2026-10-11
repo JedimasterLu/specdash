@@ -9,10 +9,10 @@ from typing import Any
 from dash import ALL, Dash, Input, Output, State, ctx, dcc, html, no_update
 from dash.exceptions import PreventUpdate
 
-from spectra import __version__
-from spectra.figures import GRAPH_CONFIG, empty_figure, inputs_figure, result_figure
-from spectra.io import AndorSpectrum, parse_asc
-from spectra.processing import (
+from specdash import __version__
+from specdash.figures import GRAPH_CONFIG, empty_figure, inputs_figure, result_figure
+from specdash.io import AndorSpectrum, parse_asc
+from specdash.processing import (
     MODES,
     ROLE_LABELS,
     ROLE_SYMBOLS,
@@ -257,7 +257,7 @@ def build_layout() -> html.Div:
                 className="topbar",
                 children=[
                     html.Div(
-                        [html.Span("Spectra", className="brand"), html.Span(f"v{__version__}", className="version")]
+                        [html.Span("SpecDash", className="brand"), html.Span(f"v{__version__}", className="version")]
                     ),
                     html.Span("Andor .asc spectral processing", className="muted"),
                 ],
@@ -592,7 +592,7 @@ def create_app() -> Dash:
     """
     app = Dash(
         __name__,
-        title="Spectra",
+        title="SpecDash",
         assets_folder=str(ASSETS_DIR),
         suppress_callback_exceptions=True,
         update_title=None,

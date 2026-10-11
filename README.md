@@ -1,4 +1,4 @@
-# Spectra
+# SpecDash
 
 Interactive web app for processing Andor Solis `.asc` spectra, built with Plotly Dash.
 
@@ -7,18 +7,18 @@ Interactive web app for processing Andor Solis `.asc` spectra, built with Plotly
 ```bash
 # with uv (from the project directory)
 uv sync
-uv run spectra
+uv run specdash
 
 # or as a global tool
 uv tool install .
-spectra
+specdash
 
 # with pip
 pip install .
-spectra
+specdash
 ```
 
-Options: `spectra --port 8050 --host 127.0.0.1 --no-browser --debug`. `python -m spectra` also works.
+Options: `specdash --port 8050 --host 127.0.0.1 --no-browser --debug`. `python -m specdash` also works.
 
 ## Measurement modes
 
