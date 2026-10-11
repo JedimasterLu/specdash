@@ -21,7 +21,6 @@ from enum import StrEnum
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.signal import savgol_filter
 
 from specdash.io import AndorSpectrum
 
@@ -250,6 +249,31 @@ def _on_grid(
     return np.interp(grid, spectrum.wavelength, values, left=np.nan, right=np.nan)
 
 
+def _savgol(values: FloatArray, window: int, polyorder: int = 2) -> FloatArray:
+    """Savitzky–Golay smoothing with polynomial-fitted edges.
+
+    Equivalent to ``scipy.signal.savgol_filter(..., mode="interp")``, implemented
+    with numpy only to keep the dependency footprint (and frozen builds) small.
+
+    Args:
+        values: Input samples; must contain at least ``window`` points.
+        window: Odd window length, greater than ``polyorder``.
+        polyorder: Order of the fitted polynomial.
+
+    Returns:
+        The smoothed samples.
+    """
+    half = window // 2
+    offsets = np.arange(-half, half + 1, dtype=np.float64)
+    design = np.vander(offsets, polyorder + 1, increasing=True)
+    projector = np.linalg.pinv(design)
+    out = np.empty_like(values)
+    out[half : len(values) - half] = np.convolve(values, projector[0][::-1], mode="valid")
+    out[:half] = (design @ (projector @ values[:window]))[:half]
+    out[len(values) - half :] = (design @ (projector @ values[-window:]))[window - half :]
+    return out
+
+
 def _smooth(values: FloatArray, window: int) -> FloatArray:
     """Apply Savitzky–Golay smoothing (polyorder 2) when ``window >= 3``."""
     finite = np.isfinite(values)
@@ -258,7 +282,7 @@ def _smooth(values: FloatArray, window: int) -> FloatArray:
     if window < 3:
         return values
     out = values.copy()
-    out[finite] = savgol_filter(values[finite], window, 2)
+    out[finite] = _savgol(values[finite], window)
     return out
 
 

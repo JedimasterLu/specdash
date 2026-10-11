@@ -2,7 +2,18 @@
 
 Interactive web app for processing Andor Solis `.asc` spectra, built with Plotly Dash.
 
-## Install & run
+## Download for Windows
+
+No Python needed. Download `SpecDash-<version>-windows-x64.zip` (or the smaller `.7z`) from the
+[Releases](../../releases) page, extract it, and double-click `SpecDash\SpecDash.exe`.
+A console window opens and the app appears in your browser; close the console window to quit.
+
+- On first launch Windows SmartScreen may warn about an unknown publisher (the exe is not
+  code-signed). Click **More info → Run anyway**.
+- Extract the whole folder before running; the exe does not work from inside the zip.
+- If port 8050 is busy, a free port is chosen automatically; the address is printed in the console.
+
+## Install & run (from source)
 
 ```bash
 # with uv (from the project directory)
@@ -42,3 +53,26 @@ Missing optional inputs are treated as zero, and the app shows a warning when th
 - X axis in wavelength, photon energy or Raman shift (configurable excitation wavelength).
 - Optional Savitzky–Golay smoothing and detector-row selection.
 - Export the processed curves, plus the normalized inputs if you choose, as CSV or tab-separated TXT.
+
+## Building the Windows executable
+
+Releases are built by GitHub Actions ([build-windows.yml](.github/workflows/build-windows.yml)).
+Bump the version in `pyproject.toml` and `src/specdash/__init__.py`, then push a matching tag:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The workflow builds a one-folder PyInstaller bundle, smoke-tests it (starts the exe and requests
+the page and every bundled script), and attaches `.zip` and `.7z` archives to the GitHub Release.
+It can also be started manually from the Actions tab; those runs only upload a build artifact.
+
+To build locally on Windows:
+
+```bash
+uv sync --no-dev --group build
+uv run --no-sync pyinstaller packaging/specdash.spec --noconfirm   # output: dist/SpecDash/
+```
+
+The spec in [packaging/](packaging/) drops Dash/Plotly files that are never used at runtime
+(source maps, test fixtures, offline plotly.js) to keep the bundle small.

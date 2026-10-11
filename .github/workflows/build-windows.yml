@@ -1,0 +1,102 @@
+name: Build Windows executable
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed to attach files to a GitHub Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      # Runtime dependencies + PyInstaller only; dev tools must not end up in the bundle.
+      - name: Install dependencies
+        run: uv sync --no-dev --group build
+
+      - name: Check tag matches package version
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $pkg = uv run --no-sync python -c "import specdash; print(specdash.__version__)"
+          if ("v$pkg" -ne $env:VERSION) {
+            throw "Tag $env:VERSION does not match specdash.__version__ ($pkg)."
+          }
+
+      - name: Build with PyInstaller
+        run: uv run --no-sync pyinstaller packaging/specdash.spec --noconfirm
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $port = 8765
+          $base = "http://127.0.0.1:$port"
+          $proc = Start-Process -FilePath ".\dist\SpecDash\SpecDash.exe" `
+            -ArgumentList "--no-browser", "--port", "$port" `
+            -RedirectStandardOutput smoke.out.log -RedirectStandardError smoke.err.log -PassThru
+          try {
+            $html = $null
+            foreach ($i in 1..30) {
+              Start-Sleep -Seconds 2
+              if ($proc.HasExited) { throw "SpecDash.exe exited early with code $($proc.ExitCode)." }
+              try { $html = (Invoke-WebRequest "$base/" -UseBasicParsing).Content; break } catch {}
+            }
+            if (-not $html) { throw "SpecDash did not start serving within 60 s." }
+
+            # Every script/style the page references must be bundled and served.
+            $urls = [regex]::Matches($html, '(?:src|href)="(/(?:_dash-component-suites|assets)/[^"]+)"') |
+              ForEach-Object { $_.Groups[1].Value }
+            if ($urls.Count -lt 5) { throw "Page references only $($urls.Count) assets; bundle looks incomplete." }
+            foreach ($u in $urls + "/_dash-layout" + "/_dash-dependencies") {
+              $r = Invoke-WebRequest "$base$u" -UseBasicParsing
+              if ($r.StatusCode -ne 200) { throw "$u returned $($r.StatusCode)" }
+            }
+            Write-Host "Smoke test passed: $($urls.Count) assets served."
+          }
+          catch {
+            Write-Host "--- stdout"; Get-Content smoke.out.log -ErrorAction SilentlyContinue
+            Write-Host "--- stderr"; Get-Content smoke.err.log -ErrorAction SilentlyContinue
+            throw
+          }
+          finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $sevenZip = "$env:ProgramFiles\7-Zip\7z.exe"
+          $name = "SpecDash-$env:VERSION-windows-x64"
+          Push-Location dist
+          & $sevenZip a -tzip -mx=9 "..\$name.zip" SpecDash
+          & $sevenZip a -t7z -mx=9 "..\$name.7z" SpecDash
+          Pop-Location
+          Get-ChildItem "$name.*" | Format-Table Name, @{n = "MB"; e = { [math]::Round($_.Length / 1MB, 1) }}
+          "{0:N0} MB unpacked" -f ((Get-ChildItem dist\SpecDash -Recurse | Measure-Object Length -Sum).Sum / 1MB)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SpecDash-${{ env.VERSION }}-windows-x64
+          path: |
+            SpecDash-*-windows-x64.zip
+            SpecDash-*-windows-x64.7z
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            SpecDash-*-windows-x64.zip
+            SpecDash-*-windows-x64.7z
+          generate_release_notes: true

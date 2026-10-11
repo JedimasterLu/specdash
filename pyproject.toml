@@ -8,7 +8,6 @@ dependencies = [
     "dash>=4.0",
     "numpy>=2.0",
     "plotly>=5.22",
-    "scipy>=1.13",
 ]
 
 [project.scripts]
@@ -22,6 +21,9 @@ build-backend = "hatchling.build"
 packages = ["src/specdash"]
 
 [dependency-groups]
+build = [
+    "pyinstaller>=6.10",
+]
 dev = [
     "ipykernel>=7.2.0",
     "matplotlib>=3.10.9",
