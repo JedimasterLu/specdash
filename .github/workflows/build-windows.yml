@@ -58,7 +58,9 @@ jobs:
             $urls = [regex]::Matches($html, '(?:src|href)="(/(?:_dash-component-suites|assets)/[^"]+)"') |
               ForEach-Object { $_.Groups[1].Value }
             if ($urls.Count -lt 5) { throw "Page references only $($urls.Count) assets; bundle looks incomplete." }
-            foreach ($u in $urls + "/_dash-layout" + "/_dash-dependencies") {
+            # dcc.Graph lazily loads plotly.min.js; it is not referenced by a tag in the HTML.
+            $lazy = @("/_dash-component-suites/plotly/package_data/plotly.min.js")
+            foreach ($u in $urls + $lazy + "/_dash-layout" + "/_dash-dependencies") {
               $r = Invoke-WebRequest "$base$u" -UseBasicParsing
               if ($r.StatusCode -ne 200) { throw "$u returned $($r.StatusCode)" }
             }
