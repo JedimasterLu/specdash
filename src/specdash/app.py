@@ -10,7 +10,7 @@ from dash import ALL, Dash, Input, Output, State, ctx, dcc, html, no_update
 from dash.exceptions import PreventUpdate
 
 from specdash import __version__
-from specdash.figures import GRAPH_CONFIG, empty_figure, inputs_figure, result_figure
+from specdash.figures import GRAPH_CONFIG, empty_figure, image_ratio, inputs_figure, result_figure, rows_figure
 from specdash.io import AndorSpectrum, parse_asc
 from specdash.processing import (
     MODES,
@@ -36,6 +36,13 @@ ROLE_HINTS: dict[Role, str] = {
 }
 
 StoreData = list[dict[str, Any]]
+RowsData = dict[str, int]
+
+ROWS_GRAPH_DEFAULT_STYLE = {"height": "72px"}
+ROWS_PLOT_CHROME_PX = 52
+"""Vertical space taken by the top and bottom margins of the image graph."""
+
+ROWS_GRAPH_CONFIG: dict[str, object] = {"displayModeBar": False, "responsive": True, "doubleClick": False}
 
 
 # --------------------------------------------------------------------------- #
@@ -128,6 +135,28 @@ def build_layout() -> html.Div:
             html.Section(
                 className="card",
                 children=[
+                    html.Div(
+                        className="card-head",
+                        children=[
+                            html.H2("Detector rows", className="inline"),
+                            html.Button("All rows", id="rows-reset", className="btn-link", n_clicks=0),
+                        ],
+                    ),
+                    html.Div(
+                        className="rows-wrap",
+                        children=dcc.Graph(
+                            id="rows-graph",
+                            config=ROWS_GRAPH_CONFIG,
+                            style=ROWS_GRAPH_DEFAULT_STYLE,
+                        ),
+                    ),
+                    html.Div(id="rows-label", className="muted small"),
+                    dcc.Store(id="rows", data=None),
+                ],
+            ),
+            html.Section(
+                className="card",
+                children=[
                     html.H2("Processing"),
                     html.Label("Output quantity", className="field-label"),
                     dcc.Dropdown(id="quantity", clearable=False, searchable=False),
@@ -141,16 +170,6 @@ def build_layout() -> html.Div:
                         value=["second", "accumulation"],
                         className="checks",
                         labelClassName="check",
-                    ),
-                    html.Label("Detector rows", className="field-label"),
-                    dcc.RangeSlider(
-                        id="rows",
-                        min=1,
-                        max=1,
-                        step=1,
-                        value=[1, 1],
-                        allowCross=False,
-                        tooltip={"placement": "bottom", "always_visible": False},
                     ),
                     html.Label("Smoothing (Savitzky–Golay window)", className="field-label"),
                     dcc.Slider(
@@ -298,7 +317,7 @@ def _load(store: StoreData | None) -> list[AndorSpectrum]:
 
 def _build_options(
     normalize: list[str] | None,
-    rows: list[int] | None,
+    rows: RowsData | None,
     smooth: int | None,
     x_axis: str | None,
     excitation: float | None,
@@ -307,7 +326,7 @@ def _build_options(
     """Assemble processing options from raw UI values."""
     normalize = normalize or []
     return Options(
-        rows=(int(rows[0]) - 1, int(rows[1]) - 1) if rows else None,
+        rows=(rows["first"] - 1, rows["last"] - 1) if rows else None,
         per_second="second" in normalize,
         per_accumulation="accumulation" in normalize,
         smooth_window=int(smooth or 0),
@@ -332,6 +351,12 @@ def _run(
     return mode, signals, process(mode, signals, backgrounds, options)
 
 
+def _rows_cell(spectrum: AndorSpectrum) -> str:
+    """Describe the row count of a spectrum, noting any ignored edge rows."""
+    ignored = spectrum.metadata.get("Ignored Rows")
+    return f"{spectrum.n_rows} ({ignored} ignored)" if ignored else str(spectrum.n_rows)
+
+
 def _metadata_table(stores: dict[Role, StoreData | None], mode: Mode) -> html.Table | html.Div:
     """Render a table summarizing the loaded files."""
     rows: list[html.Tr] = []
@@ -346,7 +371,7 @@ def _metadata_table(stores: dict[Role, StoreData | None], mode: Mode) -> html.Ta
                         html.Td(f"{spectrum.exposure_time:g} s" if spectrum.exposure_time else "—"),
                         html.Td(str(spectrum.accumulations)),
                         html.Td(spectrum.metadata.get("Acquisition Mode", "—")),
-                        html.Td(str(spectrum.n_rows)),
+                        html.Td(_rows_cell(spectrum)),
                         html.Td(f"{wl[0]:.1f}–{wl[-1]:.1f} nm ({len(wl)} px)"),
                         html.Td(spectrum.metadata.get("Date and Time", "—")),
                     ]
@@ -480,24 +505,50 @@ def register_callbacks(app: Dash) -> None:
         return {"display": "block" if x_axis == XAxis.RAMAN.value else "none"}
 
     @app.callback(
-        Output("rows", "max"),
-        Output("rows", "value"),
-        Output("rows", "marks"),
-        Output("rows", "disabled"),
-        *store_inputs,
-        State("rows", "value"),
-        State("rows", "max"),
+        Output("rows", "data"),
+        Input(f"store-{Role.SIGNAL}", "data"),
+        Input("rows-reset", "n_clicks"),
+        State("rows", "data"),
     )
-    def on_files(*args: Any) -> tuple[int, list[int], dict[int, str], bool]:
-        *stores, current, current_max = args
-        counts = [len(item["frames"][0]) for store in stores for item in store or [] if item["frames"]]
-        n_rows = min(counts) if counts else 1
-        if n_rows == current_max and current:
-            value = [min(current[0], n_rows), min(current[1], n_rows)]
+    def on_rows(*args: Any) -> RowsData | None:
+        signals, _reset, current = args
+        counts = [len(item["frames"][0]) for item in signals or [] if item["frames"]]
+        if not counts:
+            return None
+        count = min(counts)
+        if ctx.triggered_id == "rows-reset" or not current or current["count"] != count:
+            return {"first": 1, "last": count, "count": count}
+        return current
+
+    @app.callback(
+        Output("rows-graph", "figure"),
+        Output("rows-graph", "style"),
+        Output("rows-label", "children"),
+        Input(f"store-{Role.SIGNAL}", "data"),
+        Input("rows", "data"),
+    )
+    def update_rows_image(
+        signals: StoreData | None, rows: RowsData | None
+    ) -> tuple[Any, dict[str, str], str]:
+        if not signals:
+            return empty_figure("Upload a signal spectrum"), ROWS_GRAPH_DEFAULT_STYLE, ""
+        spectrum = AndorSpectrum.from_dict(signals[0])
+        figure = rows_figure(
+            spectrum.wavelength,
+            spectrum.frames,
+            (rows["first"], rows["last"]) if rows else None,
+            rows["count"] if rows else None,
+        )
+        ratio = image_ratio(spectrum.wavelength, spectrum.n_rows)
+        style = {"height": f"calc(100cqw * {ratio:.4f} + {ROWS_PLOT_CHROME_PX}px)"}
+        if not rows or rows["count"] <= 1:
+            return figure, style, "Single detector row"
+        if rows["first"] == rows["last"]:
+            label = f"Row {rows['first']} of {rows['count']}"
         else:
-            value = [1, n_rows]
-        marks = {1: "1", n_rows: str(n_rows)}
-        return n_rows, value, marks, n_rows <= 1
+            n = rows["last"] - rows["first"] + 1
+            label = f"Rows {rows['first']}–{rows['last']} of {rows['count']} averaged ({n})"
+        return figure, style, f"{label} · {spectrum.name}"
 
     @app.callback(
         Output("result-graph", "figure"),
@@ -508,7 +559,7 @@ def register_callbacks(app: Dash) -> None:
         Input("mode", "value"),
         Input("quantity", "value"),
         Input("normalize", "value"),
-        Input("rows", "value"),
+        Input("rows", "data"),
         Input("smooth", "value"),
         Input("x-axis", "value"),
         Input("excitation", "value"),
@@ -518,7 +569,7 @@ def register_callbacks(app: Dash) -> None:
         mode_key: str,
         quantity: str | None,
         normalize: list[str] | None,
-        rows: list[int] | None,
+        rows: RowsData | None,
         smooth: int | None,
         x_axis: str | None,
         excitation: float | None,
@@ -549,7 +600,7 @@ def register_callbacks(app: Dash) -> None:
         State("mode", "value"),
         State("quantity", "value"),
         State("normalize", "value"),
-        State("rows", "value"),
+        State("rows", "data"),
         State("smooth", "value"),
         State("x-axis", "value"),
         State("excitation", "value"),
@@ -563,7 +614,7 @@ def register_callbacks(app: Dash) -> None:
         mode_key: str,
         quantity: str | None,
         normalize: list[str] | None,
-        rows: list[int] | None,
+        rows: RowsData | None,
         smooth: int | None,
         x_axis: str | None,
         excitation: float | None,

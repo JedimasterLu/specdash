@@ -139,6 +139,37 @@ def _to_float(value: str | None) -> float | None:
         return None
 
 
+EDGE_ROW_RATIO = 5.0
+"""An edge row whose mean exceeds the interior rows' mean by this factor is dropped."""
+
+
+def _trim_edge_rows(frames: FloatArray) -> tuple[FloatArray, list[str]]:
+    """Drop first / last detector rows that are far brighter than the rest.
+
+    Edge rows of a CCD image are often saturated or hold readout artifacts.
+
+    Args:
+        frames: Raw counts, shape ``(n_pixels, n_rows)``.
+
+    Returns:
+        The trimmed frames and which edges (``"first"`` / ``"last"``) were dropped.
+    """
+    if frames.shape[1] < 3:
+        return frames, []
+    means = frames.mean(axis=0)
+    interior = means[1:-1].mean()
+    if interior <= 0:
+        return frames, []
+    dropped = []
+    first = int(means[0] > EDGE_ROW_RATIO * interior)
+    last = int(means[-1] > EDGE_ROW_RATIO * interior)
+    if first:
+        dropped.append("first")
+    if last:
+        dropped.append("last")
+    return frames[:, first : frames.shape[1] - last], dropped
+
+
 def parse_asc(text: str, name: str = "spectrum") -> AndorSpectrum:
     """Parse the contents of an Andor ``.asc`` file.
 
@@ -166,10 +197,9 @@ def parse_asc(text: str, name: str = "spectrum") -> AndorSpectrum:
             try:
                 values = [float(p) for p in parts]
             except ValueError:
+                # Text before the data block is header metadata, after it footer.
                 if rows:
                     in_data = False
-                else:
-                    continue
             else:
                 if len(values) >= 2:
                     rows.append(values)
@@ -184,7 +214,10 @@ def parse_asc(text: str, name: str = "spectrum") -> AndorSpectrum:
     array = np.array([r[:width] for r in rows], dtype=np.float64)
     order = np.argsort(array[:, 0])
     array = array[order]
-    return AndorSpectrum(name=name, wavelength=array[:, 0], frames=array[:, 1:], metadata=metadata)
+    frames, dropped = _trim_edge_rows(array[:, 1:])
+    if dropped:
+        metadata["Ignored Rows"] = " and ".join(dropped)
+    return AndorSpectrum(name=name, wavelength=array[:, 0], frames=frames, metadata=metadata)
 
 
 def read_asc(path: str | Path) -> AndorSpectrum:

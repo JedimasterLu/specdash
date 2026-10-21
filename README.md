@@ -31,9 +31,13 @@ specdash
 
 Options: `specdash --port 8050 --host 127.0.0.1 --no-browser --debug`. `python -m specdash` also works.
 
+On import, a first or last detector row whose mean is more than 5× the mean of the interior rows
+(typically a saturated or artifact row) is ignored and noted in the file metadata table.
+
 ## Measurement modes
 
-Every input is averaged over the selected detector rows and, by default, normalized to
+Every input (signal and backgrounds alike) is averaged over the selected detector rows (drag vertically on the grayscale image
+of the first signal file in the sidebar; display is clipped to the 1st–99th percentile) and, by default, normalized to
 **counts/s per accumulation** using `Exposure Time (secs)` and `Number of Accumulations`
 from the file footer. Backgrounds are interpolated onto the wavelength grid of the first signal.
 
