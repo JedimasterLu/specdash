@@ -45,7 +45,7 @@ exe = EXE(  # noqa: F821
     [],
     exclude_binaries=True,
     name="SpecDash",
-    console=True,  # keep the console: it shows errors and closing it quits the app
+    console=False,  # no terminal window; output goes to a log file and the app has a Quit button
     upx=False,  # UPX increases antivirus false positives
 )
 coll = COLLECT(  # noqa: F821

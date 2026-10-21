@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import base64
+import os
+import threading
 from pathlib import Path
 from typing import Any
 
 from dash import ALL, Dash, Input, Output, State, ctx, dcc, html, no_update
 from dash.exceptions import PreventUpdate
 
-from specdash import __version__
+from specdash import __version__, lifecycle
 from specdash.figures import GRAPH_CONFIG, empty_figure, image_ratio, inputs_figure, result_figure, rows_figure
 from specdash.io import AndorSpectrum, parse_asc
 from specdash.processing import (
@@ -96,8 +98,12 @@ def _mode_options() -> list[dict[str, Any]]:
     return [{"label": mode.label, "value": key} for key, mode in MODES.items()]
 
 
-def build_layout() -> html.Div:
+def build_layout(quit_button: bool = False) -> html.Div:
     """Build the application layout.
+
+    Args:
+        quit_button: Show a button that stops the server and make pages report their
+            presence, for builds without a console.
 
     Returns:
         The root component.
@@ -278,10 +284,24 @@ def build_layout() -> html.Div:
                     html.Div(
                         [html.Span("SpecDash", className="brand"), html.Span(f"v{__version__}", className="version")]
                     ),
-                    html.Span("Andor .asc spectral processing", className="muted"),
+                    html.Div(
+                        className="actions",
+                        children=[
+                            html.Span("Andor .asc spectral processing", className="muted"),
+                            *(
+                                [
+                                    html.Button("Quit", id="quit", className="btn", n_clicks=0),
+                                    html.Span(id="quit-status", className="muted small"),
+                                ]
+                                if quit_button
+                                else []
+                            ),
+                        ],
+                    ),
                 ],
             ),
             html.Div(className="layout", children=[sidebar, main]),
+            *([html.Div(id="heartbeat", hidden=True)] if quit_button else []),
         ],
     )
 
@@ -635,8 +655,31 @@ def register_callbacks(app: Dash) -> None:
         return dcc.send_string(text, filename=f"{stem}_{mode.key}_{quantity_key}.{fmt}")
 
 
-def create_app() -> Dash:
+def register_quit_callback(app: Dash) -> None:
+    """Register the callback behind the Quit button.
+
+    Args:
+        app: The Dash application.
+    """
+
+    @app.callback(
+        Output("quit-status", "children"),
+        Input("quit", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def quit_app(_clicks: int) -> str:
+        # Exit after the response has been sent so the page can show the message.
+        threading.Timer(0.5, os._exit, args=(0,)).start()
+        return "SpecDash stopped. You can close this tab."
+
+
+def create_app(quit_button: bool = False) -> Dash:
     """Create and configure the Dash application.
+
+    Args:
+        quit_button: Add a Quit button and quit automatically when the last
+            browser tab closes. Needed when the app runs without a console
+            window that could be closed instead.
 
     Returns:
         The configured application.
@@ -648,6 +691,9 @@ def create_app() -> Dash:
         suppress_callback_exceptions=True,
         update_title=None,
     )
-    app.layout = build_layout()
+    app.layout = build_layout(quit_button)
     register_callbacks(app)
+    if quit_button:
+        register_quit_callback(app)
+        lifecycle.install(app.server)
     return app
