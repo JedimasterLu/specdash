@@ -278,3 +278,8 @@ h2.inline { display: inline-block; margin: 0 10px 0 0; }
 }
 .table td { padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .table tr:last-child td { border-bottom: none; }
+
+/* ---------- Detector rows image ---------- */
+
+#rows-label { margin: 4px 0 8px; }
+.rows-wrap { container-type: inline-size; }

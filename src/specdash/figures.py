@@ -100,7 +100,8 @@ def empty_figure(message: str) -> go.Figure:
         The placeholder figure.
     """
     fig = go.Figure()
-    fig.update_layout(_base_layout("", "", False))
+    # No axes are shown, so the margins must be symmetric for the hint to be centered.
+    fig.update_layout({**_base_layout("", "", False), "margin": {"l": 16, "r": 16, "t": 16, "b": 16}})
     fig.update_xaxes(visible=False)
     fig.update_yaxes(visible=False)
     fig.add_annotation(
@@ -171,5 +172,160 @@ def inputs_figure(result: Result, signal_order: Sequence[str]) -> go.Figure:
         fig.add_trace(_line(result.x, y, label, color, dash))
     fig.update_layout(
         _base_layout(result.x_label, f"Intensity ({result.intensity_unit})", len(result.inputs) > 1)
+    )
+    return fig
+
+
+MAX_IMAGE_COLUMNS = 400
+"""Spectral pixels are block-averaged down to this many columns for display."""
+
+ACCENT = "#2a78d6"
+
+
+def _downsample_columns(
+    wavelength: FloatArray, image: FloatArray, max_columns: int
+) -> tuple[FloatArray, FloatArray]:
+    """Block-average the spectral axis so the thumbnail stays light.
+
+    Args:
+        wavelength: Wavelength per pixel, shape ``(n_pixels,)``.
+        image: Intensities, shape ``(n_rows, n_pixels)``.
+        max_columns: Upper bound on the number of output columns.
+
+    Returns:
+        The reduced wavelength axis and image.
+    """
+    step = -(-wavelength.size // max_columns)
+    if step <= 1:
+        return wavelength, image
+    edges = np.arange(0, wavelength.size, step)
+    sizes = np.diff(np.append(edges, wavelength.size))
+    return (
+        np.add.reduceat(wavelength, edges) / sizes,
+        np.add.reduceat(image, edges, axis=1) / sizes,
+    )
+
+
+MIN_IMAGE_RATIO = 1 / 3
+"""Flattest height / width the detector image is drawn with."""
+
+MAX_IMAGE_RATIO = 1.0
+"""Tallest height / width the detector image is drawn with."""
+
+
+def image_ratio(wavelength: FloatArray, n_rows: int) -> float:
+    """Return the drawn height / width of the detector image.
+
+    The image keeps the aspect of the data (one pixel column as wide as one row
+    is tall). If that is flatter than 1:3 it is stretched vertically to 1:3,
+    and it is never taller than square.
+
+    Args:
+        wavelength: Wavelength per pixel, shape ``(n_pixels,)``.
+        n_rows: Number of detector rows.
+
+    Returns:
+        Height divided by width.
+    """
+    return float(np.clip(n_rows / wavelength.size, MIN_IMAGE_RATIO, MAX_IMAGE_RATIO))
+
+
+def rows_figure(
+    wavelength: FloatArray,
+    frames: FloatArray,
+    rows: tuple[int, int] | None,
+    selectable: int | None = None,
+) -> go.Figure:
+    """Show the detector image as grayscale (99:1 contrast) with the selected rows outlined.
+
+    The outline is the figure's only shape. ``assets/rows_select.js`` moves it
+    while the user drags, snapped to whole rows, and reads ``layout.meta`` for
+    the number of selectable rows.
+
+    Args:
+        wavelength: Wavelength per pixel, shape ``(n_pixels,)``.
+        frames: Raw counts, shape ``(n_pixels, n_rows)``.
+        rows: Inclusive one-based row range, or ``None`` for all rows.
+        selectable: Number of rows that may be selected, defaulting to all.
+
+    Returns:
+        The image figure.
+    """
+    n_rows = frames.shape[1]
+    first, last = rows or (1, n_rows)
+    image = frames.T
+    low, high = np.percentile(image, [1, 99])
+    x, z = _downsample_columns(wavelength, image, MAX_IMAGE_COLUMNS)
+
+    fig = go.Figure(
+        go.Heatmap(
+            x=x,
+            y=np.arange(1, n_rows + 1),
+            z=z,
+            zmin=float(low),
+            zmax=float(high) if high > low else float(low) + 1.0,
+            colorscale=[[0, "#000000"], [1, "#ffffff"]],
+            showscale=False,
+            hovertemplate="row %{y}<br>%{x:.1f} nm<br>%{z:.4g}<extra></extra>",
+        )
+    )
+    axis = {
+        "fixedrange": True,
+        # Fixed margins keep the image flush with the card; tick labels that would
+        # overflow the graph are hidden instead of pushing the plot area inward.
+        "automargin": False,
+        "ticklabeloverflow": "hide past div",
+        "showgrid": False,
+        "zeroline": False,
+        "showline": True,
+        "linecolor": AXIS,
+        "ticks": "outside",
+        "tickcolor": AXIS,
+        "ticklen": 5,
+        "minor": {"ticks": "outside", "tickcolor": AXIS, "ticklen": 2.5},
+    }
+    fig.update_layout(
+        paper_bgcolor=SURFACE,
+        plot_bgcolor=SURFACE,
+        font={"family": FONT_FAMILY, "color": TEXT_SECONDARY, "size": 11},
+        margin={"l": 0, "r": 0, "t": 4, "b": 48},
+        showlegend=False,
+        dragmode=False,
+        hoverlabel={"bgcolor": SURFACE, "bordercolor": AXIS, "font": {"color": TEXT_PRIMARY}},
+        xaxis={
+            **axis,
+            "title": {"text": "Wavelength (nm)", "standoff": 4},
+            "range": [float(x[0]), float(x[-1])],
+            "constrain": "domain",
+            "constraintoward": "left",
+        },
+        yaxis={
+            **axis,
+            # Pin the pixel aspect so the plot area matches the container height
+            # that the app derives from ``image_ratio``.
+            "scaleanchor": "x",
+            "scaleratio": image_ratio(wavelength, n_rows) * float(x[-1] - x[0]) / n_rows,
+            "constrain": "domain",
+            "constraintoward": "top",
+            "range": [n_rows + 0.5, 0.5],
+            "ticks": "",
+            "showticklabels": False,
+        },
+        shapes=[
+            {
+                "type": "rect",
+                # Axis references (not paper) clip the outline to the plot area.
+                "xref": "x",
+                "yref": "y",
+                "x0": float(x[0]),
+                "x1": float(x[-1]),
+                "y0": first - 0.5,
+                "y1": last + 0.5,
+                "line": {"color": ACCENT, "width": 1.4},
+            }
+        ]
+        if n_rows > 1
+        else [],
+        meta={"count": min(selectable or n_rows, n_rows)},
     )
     return fig

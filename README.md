@@ -6,12 +6,13 @@ Interactive web app for processing Andor Solis `.asc` spectra, built with Plotly
 
 No Python needed. Download `SpecDash-<version>-windows-x64.zip` (or the smaller `.7z`) from the
 [Releases](../../releases) page, extract it, and double-click `SpecDash\SpecDash.exe`.
-A console window opens and the app appears in your browser; close the console window to quit.
+The app opens in your browser (no console window). It stops by itself shortly after you close the browser tab (or click **Quit** in the top bar);
+startup errors are written to `%LOCALAPPDATA%\SpecDash\specdash.log`.
 
 - On first launch Windows SmartScreen may warn about an unknown publisher (the exe is not
   code-signed). Click **More info → Run anyway**.
 - Extract the whole folder before running; the exe does not work from inside the zip.
-- If port 8050 is busy, a free port is chosen automatically; the address is printed in the console.
+- If port 8050 is busy, a free port is chosen automatically; the browser opens at the chosen address.
 
 ## Install & run (from source)
 
@@ -31,9 +32,13 @@ specdash
 
 Options: `specdash --port 8050 --host 127.0.0.1 --no-browser --debug`. `python -m specdash` also works.
 
+On import, a first or last detector row whose mean is more than 5× the mean of the interior rows
+(typically a saturated or artifact row) is ignored and noted in the file metadata table.
+
 ## Measurement modes
 
-Every input is averaged over the selected detector rows and, by default, normalized to
+Every input (signal and backgrounds alike) is averaged over the selected detector rows (drag vertically on the grayscale image
+of the first signal file in the sidebar; display is clipped to the 1st–99th percentile) and, by default, normalized to
 **counts/s per accumulation** using `Exposure Time (secs)` and `Number of Accumulations`
 from the file footer. Backgrounds are interpolated onto the wavelength grid of the first signal.
 

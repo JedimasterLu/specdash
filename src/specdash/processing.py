@@ -238,6 +238,10 @@ def _on_grid(
     spectrum: AndorSpectrum, grid: FloatArray, options: Options, warnings: list[str]
 ) -> FloatArray:
     """Normalize a spectrum and interpolate it onto ``grid``."""
+    if options.rows is not None and options.rows[1] >= spectrum.n_rows:
+        warnings.append(
+            f"{spectrum.name} has only {spectrum.n_rows} detector rows; the row selection is clipped."
+        )
     values = spectrum.rate(options.rows, options.per_second, options.per_accumulation)
     if spectrum.wavelength.shape == grid.shape and np.allclose(spectrum.wavelength, grid, atol=1e-3):
         return values
