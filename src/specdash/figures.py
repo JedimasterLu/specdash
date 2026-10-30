@@ -85,7 +85,7 @@ def _base_layout(x_label: str, y_label: str, show_legend: bool) -> dict[str, obj
             "bgcolor": "rgba(0,0,0,0)",
         },
         "xaxis": {**axis, "title": {**axis["title"], "text": x_label}},  # type: ignore[dict-item]
-        "yaxis": {**axis, "title": {**axis["title"], "text": y_label}},  # type: ignore[dict-item]
+        "yaxis": {**axis, "showspikes": False, "title": {**axis["title"], "text": y_label}},  # type: ignore[dict-item]
         "uirevision": "keep",
     }
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import math
 import os
 import threading
 from pathlib import Path
@@ -148,6 +149,9 @@ def build_layout(quit_button: bool = False) -> html.Div:
                             html.Button("All rows", id="rows-reset", className="btn-link", n_clicks=0),
                         ],
                     ),
+                    html.Label("Signal", className="field-label"),
+                    dcc.Dropdown(id="rows-signal", clearable=False, searchable=False, style={"marginBottom": "10px"}),
+                    html.Label("Image view", className="field-label"),
                     html.Div(
                         className="rows-wrap",
                         children=dcc.Graph(
@@ -166,28 +170,15 @@ def build_layout(quit_button: bool = False) -> html.Div:
                     html.H2("Processing"),
                     html.Label("Output quantity", className="field-label"),
                     dcc.Dropdown(id="quantity", clearable=False, searchable=False),
-                    html.Label("Normalization", className="field-label"),
-                    dcc.Checklist(
-                        id="normalize",
-                        options=[
-                            {"label": "Divide by exposure time", "value": "second"},
-                            {"label": "Divide by accumulations", "value": "accumulation"},
-                        ],
-                        value=["second", "accumulation"],
-                        className="checks",
-                        labelClassName="check",
-                    ),
-                    html.Label("Smoothing (Savitzky–Golay window)", className="field-label"),
-                    dcc.Slider(
-                        id="smooth",
-                        min=0,
-                        max=51,
-                        step=2,
-                        value=0,
-                        marks={0: "off", 11: "11", 21: "21", 31: "31", 51: "51"},
-                        tooltip={"placement": "bottom"},
-                    ),
                     html.Label("X axis", className="field-label"),
+                    dcc.RangeSlider(
+                        id="wl-range",
+                        min=0,
+                        max=1,
+                        value=[0, 1],
+                        allowCross=False,
+                    ),
+                    html.Div(style={"height": "14px"}),
                     dcc.RadioItems(
                         id="x-axis",
                         options=[
@@ -215,6 +206,28 @@ def build_layout(quit_button: bool = False) -> html.Div:
                                 debounce=True,
                             ),
                         ],
+                    ),
+                    html.Label("Normalization", className="field-label"),
+                    dcc.Checklist(
+                        id="normalize",
+                        options=[
+                            {"label": "Divide by exposure time", "value": "second"},
+                            {"label": "Divide by accumulations", "value": "accumulation"},
+                            {"label": "Divided by maximum", "value": "max"},
+                        ],
+                        value=["second", "accumulation"],
+                        className="checks",
+                        labelClassName="check",
+                    ),
+                    html.Label("Smoothing (Savitzky–Golay window)", className="field-label"),
+                    dcc.Slider(
+                        id="smooth",
+                        min=0,
+                        max=51,
+                        step=2,
+                        value=0,
+                        marks={0: "off", 11: "11", 21: "21", 31: "31", 51: "51"},
+                        tooltip={"placement": "bottom"},
                     ),
                 ],
             ),
@@ -264,7 +277,7 @@ def build_layout(quit_button: bool = False) -> html.Div:
             html.Section(
                 className="card card-plot",
                 children=[
-                    html.H2("Normalized inputs"),
+                    html.H2("Raw inputs"),
                     dcc.Graph(id="inputs-graph", config=GRAPH_CONFIG, style={"height": "320px"}),
                 ],
             ),
@@ -342,6 +355,7 @@ def _build_options(
     x_axis: str | None,
     excitation: float | None,
     quantity: str | None,
+    wl_range: list[float] | None = None,
 ) -> Options:
     """Assemble processing options from raw UI values."""
     normalize = normalize or []
@@ -349,6 +363,8 @@ def _build_options(
         rows=(rows["first"] - 1, rows["last"] - 1) if rows else None,
         per_second="second" in normalize,
         per_accumulation="accumulation" in normalize,
+        divide_max="max" in normalize,
+        wavelength_range=(wl_range[0], wl_range[1]) if wl_range else None,
         smooth_window=int(smooth or 0),
         excitation_nm=float(excitation) if excitation else 532.0,
         x_axis=XAxis(x_axis or XAxis.WAVELENGTH),
@@ -525,6 +541,27 @@ def register_callbacks(app: Dash) -> None:
         return {"display": "block" if x_axis == XAxis.RAMAN.value else "none"}
 
     @app.callback(
+        Output("wl-range", "min"),
+        Output("wl-range", "max"),
+        Output("wl-range", "value"),
+        Input(f"store-{Role.SIGNAL}", "data"),
+        State("wl-range", "value"),
+        State("wl-range", "max"),
+    )
+    def on_wl_range(
+        signals: StoreData | None, current: list[float], old_max: float
+    ) -> tuple[int, int, list[float]]:
+        if not signals:
+            return 0, 1, [0, 1]
+        wavelength = signals[0]["wavelength"]
+        lo, hi = math.floor(wavelength[0]), math.ceil(wavelength[-1])
+        if old_max > 1:  # keep the user's selection, clipped to the new bounds
+            kept = [max(current[0], lo), min(current[1], hi)]
+            if kept[0] < kept[1]:
+                return lo, hi, kept
+        return lo, hi, [lo, hi]
+
+    @app.callback(
         Output("rows", "data"),
         Input(f"store-{Role.SIGNAL}", "data"),
         Input("rows-reset", "n_clicks"),
@@ -541,18 +578,29 @@ def register_callbacks(app: Dash) -> None:
         return current
 
     @app.callback(
+        Output("rows-signal", "options"),
+        Output("rows-signal", "value"),
+        Input(f"store-{Role.SIGNAL}", "data"),
+        State("rows-signal", "value"),
+    )
+    def on_rows_signal(signals: StoreData | None, current: int | None) -> tuple[list[dict[str, Any]], int]:
+        options = [{"label": item["name"], "value": i} for i, item in enumerate(signals or [])]
+        return options, current if current is not None and current < len(options) else 0
+
+    @app.callback(
         Output("rows-graph", "figure"),
         Output("rows-graph", "style"),
         Output("rows-label", "children"),
         Input(f"store-{Role.SIGNAL}", "data"),
         Input("rows", "data"),
+        Input("rows-signal", "value"),
     )
     def update_rows_image(
-        signals: StoreData | None, rows: RowsData | None
+        signals: StoreData | None, rows: RowsData | None, index: int | None
     ) -> tuple[Any, dict[str, str], str]:
         if not signals:
             return empty_figure("Upload a signal spectrum"), ROWS_GRAPH_DEFAULT_STYLE, ""
-        spectrum = AndorSpectrum.from_dict(signals[0])
+        spectrum = AndorSpectrum.from_dict(signals[index if index is not None and index < len(signals) else 0])
         figure = rows_figure(
             spectrum.wavelength,
             spectrum.frames,
@@ -568,7 +616,7 @@ def register_callbacks(app: Dash) -> None:
         else:
             n = rows["last"] - rows["first"] + 1
             label = f"Rows {rows['first']}–{rows['last']} of {rows['count']} averaged ({n})"
-        return figure, style, f"{label} · {spectrum.name}"
+        return figure, style, label
 
     @app.callback(
         Output("result-graph", "figure"),
@@ -583,6 +631,7 @@ def register_callbacks(app: Dash) -> None:
         Input("smooth", "value"),
         Input("x-axis", "value"),
         Input("excitation", "value"),
+        Input("wl-range", "value"),
         *store_inputs,
     )
     def update_plots(
@@ -593,6 +642,7 @@ def register_callbacks(app: Dash) -> None:
         smooth: int | None,
         x_axis: str | None,
         excitation: float | None,
+        wl_range: list[float] | None,
         *stores: StoreData | None,
     ) -> tuple[Any, Any, str, list[html.Div], Any]:
         store_map = dict(zip(Role, stores, strict=True))
@@ -602,7 +652,7 @@ def register_callbacks(app: Dash) -> None:
         if not store_map[Role.SIGNAL]:
             hint = empty_figure("Upload a signal spectrum to begin")
             return hint, empty_figure("No inputs yet"), quantity_obj.formula, [], meta
-        options = _build_options(normalize, rows, smooth, x_axis, excitation, quantity)
+        options = _build_options(normalize, rows, smooth, x_axis, excitation, quantity, wl_range)
         try:
             _, signals, result = _run(mode_key, store_map, options)
         except ValueError as exc:
@@ -624,6 +674,7 @@ def register_callbacks(app: Dash) -> None:
         State("smooth", "value"),
         State("x-axis", "value"),
         State("excitation", "value"),
+        State("wl-range", "value"),
         *[State(f"store-{role}", "data") for role in Role],
         prevent_initial_call=True,
     )
@@ -638,12 +689,13 @@ def register_callbacks(app: Dash) -> None:
         smooth: int | None,
         x_axis: str | None,
         excitation: float | None,
+        wl_range: list[float] | None,
         *stores: StoreData | None,
     ) -> dict[str, Any]:
         store_map = dict(zip(Role, stores, strict=True))
         if not store_map[Role.SIGNAL]:
             raise PreventUpdate
-        options = _build_options(normalize, rows, smooth, x_axis, excitation, quantity)
+        options = _build_options(normalize, rows, smooth, x_axis, excitation, quantity, wl_range)
         try:
             mode, signals, result = _run(mode_key, store_map, options)
         except ValueError:
