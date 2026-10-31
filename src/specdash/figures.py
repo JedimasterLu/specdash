@@ -49,6 +49,7 @@ GRAPH_CONFIG: dict[str, object] = {
 
 def _base_layout(x_label: str, y_label: str, show_legend: bool) -> dict[str, object]:
     """Return the shared layout dictionary."""
+    unit = x_label[x_label.find("(") + 1 : x_label.rfind(")")] if "(" in x_label else ""
     axis = {
         "showgrid": True,
         "gridcolor": GRID,
@@ -61,11 +62,7 @@ def _base_layout(x_label: str, y_label: str, show_legend: bool) -> dict[str, obj
         "title": {"font": {"color": TEXT_SECONDARY, "size": 13}},
         "tickfont": {"color": TEXT_SECONDARY, "size": 12},
         "exponentformat": "power",
-        "showspikes": True,
-        "spikemode": "across",
-        "spikethickness": 1,
-        "spikedash": "solid",
-        "spikecolor": AXIS,
+        "showspikes": False,  # the vertical cursor line is drawn by assets/hover_line.js
     }
     return {
         "paper_bgcolor": SURFACE,
@@ -84,7 +81,11 @@ def _base_layout(x_label: str, y_label: str, show_legend: bool) -> dict[str, obj
             "font": {"color": TEXT_SECONDARY, "size": 12},
             "bgcolor": "rgba(0,0,0,0)",
         },
-        "xaxis": {**axis, "title": {**axis["title"], "text": x_label}},  # type: ignore[dict-item]
+        "xaxis": {
+            **axis,
+            "title": {**axis["title"], "text": x_label},  # type: ignore[dict-item]
+            "unifiedhovertitle": {"text": f"%{{x:.2f}} {unit}" if unit else "%{x:.2f}"},
+        },
         "yaxis": {**axis, "title": {**axis["title"], "text": y_label}},  # type: ignore[dict-item]
         "uirevision": "keep",
     }
@@ -126,7 +127,7 @@ def _line(
         name=name,
         mode="lines",
         line={"color": color, "width": 2, "dash": dash},
-        hovertemplate=f"%{{y:.4g}}<extra>{name}</extra>",
+        hovertemplate="<b>%{y:.4g}</b><extra></extra>",
         xhoverformat=hover_x,
     )
 

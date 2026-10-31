@@ -2,7 +2,7 @@
 
 Two families of measurements are supported:
 
-* **Emission** (PL, fluorescence, Raman): the sample emits light and the
+* **Emission** (PL, Raman): the sample emits light and the
   result is the signal minus the substrate background.
 * **Optical** (dark-field scattering, transmission, reflection): the result is
   a ratio against a reference (lamp) spectrum, with dark counts removed.
@@ -123,7 +123,6 @@ MODES: dict[str, Mode] = {
     m.key: m
     for m in (
         Mode("pl", "Photoluminescence", Family.EMISSION, _EMISSION_QUANTITIES),
-        Mode("fluorescence", "Fluorescence", Family.EMISSION, _EMISSION_QUANTITIES),
         Mode("raman", "Raman", Family.EMISSION, _EMISSION_QUANTITIES),
         Mode(
             "darkfield",
@@ -183,6 +182,9 @@ class Options:
         per_accumulation: Normalize by number of accumulations.
         smooth_window: Savitzky–Golay window length in points; values below
             3 disable smoothing.
+        wavelength_range: Inclusive wavelength range in nm to keep, or ``None``
+            for the full grid.
+        divide_max: Scale each processed curve by its maximum.
         excitation_nm: Excitation wavelength for the Raman shift axis.
         x_axis: X-axis representation.
         quantity: Output quantity key; ``None`` selects the mode default.
@@ -192,6 +194,8 @@ class Options:
     per_second: bool = True
     per_accumulation: bool = True
     smooth_window: int = 0
+    divide_max: bool = False
+    wavelength_range: tuple[float, float] | None = None
     excitation_nm: float = 532.0
     x_axis: XAxis = XAxis.WAVELENGTH
     quantity: str | None = None
@@ -374,6 +378,11 @@ def process(
 
     warnings: list[str] = []
     grid = signals[0].wavelength
+    if options.wavelength_range is not None:
+        lo, hi = options.wavelength_range
+        grid = grid[(grid >= lo) & (grid <= hi)]
+        if grid.size < 2:
+            raise ValueError("The selected wavelength range contains no data.")
     unit = "counts"
     if options.per_second:
         unit += "/s"
@@ -398,7 +407,10 @@ def process(
         s = _on_grid(spectrum, grid, options, warnings)
         inputs[f"S: {spectrum.name}"] = s
         y = _compute(quantity.key, s, bg.get(Role.SUBSTRATE), bg.get(Role.REFERENCE), bg.get(Role.DARK))
-        curves[spectrum.name] = _smooth(y, options.smooth_window)
+        y = _smooth(y, options.smooth_window)
+        if options.divide_max and np.any(np.isfinite(y)) and np.nanmax(y) > 0:
+            y = y / np.nanmax(y)
+        curves[spectrum.name] = y
 
     y_label = quantity.label
     if mode.family is Family.EMISSION:
