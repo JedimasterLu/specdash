@@ -2,7 +2,7 @@
 
 Two families of measurements are supported:
 
-* **Emission** (PL, fluorescence, Raman): the sample emits light and the
+* **Emission** (PL, Raman): the sample emits light and the
   result is the signal minus the substrate background.
 * **Optical** (dark-field scattering, transmission, reflection): the result is
   a ratio against a reference (lamp) spectrum, with dark counts removed.
@@ -123,7 +123,6 @@ MODES: dict[str, Mode] = {
     m.key: m
     for m in (
         Mode("pl", "Photoluminescence", Family.EMISSION, _EMISSION_QUANTITIES),
-        Mode("fluorescence", "Fluorescence", Family.EMISSION, _EMISSION_QUANTITIES),
         Mode("raman", "Raman", Family.EMISSION, _EMISSION_QUANTITIES),
         Mode(
             "darkfield",

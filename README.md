@@ -44,7 +44,7 @@ from the file footer. Backgrounds are interpolated onto the wavelength grid of t
 
 | Mode | Inputs | Output quantities |
 |---|---|---|
-| Photoluminescence, Fluorescence, Raman | S, B | `S − B`, `S` |
+| Photoluminescence, Raman | S, B | `S − B`, `S` |
 | Dark-field scattering | S, B, R, D | `(S − B) / (R − D)`, `(S − D) / (R − D)` |
 | Transmission | S, B, R, D | `(S − D) / (B − D)`, `(S − D) / (R − D)`, `1 − T/T₀`, `−log₁₀(T/T₀)` |
 | Reflection | S, B, R, D | `(S − D) / (B − D)`, `(S − D) / (R − D)`, `(S − B) / (B − D)` |

@@ -283,3 +283,9 @@ h2.inline { display: inline-block; margin: 0 10px 0 0; }
 
 #rows-label { margin: 4px 0 8px; }
 .rows-wrap { container-type: inline-size; }
+
+/* Hover label eases toward the cursor (position set by hover_line.js). */
+.hoverlayer > g.legend { transition: transform 120ms ease-out, opacity 120ms ease-out; }
+.hoverlayer > g.legend rect.bg { rx: 8px; ry: 8px; fill-opacity: 0.9 !important; }
+/* Nudge the label content right so the left padding matches the right (`translate` composes with Plotly's own transforms). */
+.hoverlayer > g.legend > :not(rect.bg) { translate: 2px 0; }
