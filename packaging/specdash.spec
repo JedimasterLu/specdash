@@ -45,6 +45,7 @@ exe = EXE(  # noqa: F821
     [],
     exclude_binaries=True,
     name="SpecDash",
+    icon=str(ROOT / "packaging" / "specdash.ico"),
     console=False,  # no terminal window; output goes to a log file and the app has a Quit button
     upx=False,  # UPX increases antivirus false positives
 )

@@ -82,7 +82,6 @@ jobs:
           $name = "SpecDash-$env:VERSION-windows-x64"
           Push-Location dist
           & $sevenZip a -tzip -mx=9 "..\$name.zip" SpecDash
-          & $sevenZip a -t7z -mx=9 "..\$name.7z" SpecDash
           Pop-Location
           Get-ChildItem "$name.*" | Format-Table Name, @{n = "MB"; e = { [math]::Round($_.Length / 1MB, 1) }}
           "{0:N0} MB unpacked" -f ((Get-ChildItem dist\SpecDash -Recurse | Measure-Object Length -Sum).Sum / 1MB)
@@ -92,7 +91,6 @@ jobs:
           name: SpecDash-${{ env.VERSION }}-windows-x64
           path: |
             SpecDash-*-windows-x64.zip
-            SpecDash-*-windows-x64.7z
 
       - name: Publish release
         if: github.ref_type == 'tag'
@@ -100,5 +98,4 @@ jobs:
         with:
           files: |
             SpecDash-*-windows-x64.zip
-            SpecDash-*-windows-x64.7z
           generate_release_notes: true

@@ -4,7 +4,7 @@ Interactive web app for processing Andor Solis `.asc` spectra, built with Plotly
 
 ## Download for Windows
 
-No Python needed. Download `SpecDash-<version>-windows-x64.zip` (or the smaller `.7z`) from the
+No Python needed. Download `SpecDash-<version>-windows-x64.zip` from the
 [Releases](../../releases) page, extract it, and double-click `SpecDash\SpecDash.exe`.
 The app opens in your browser (no console window). It stops by itself shortly after you close the browser tab (or click **Quit** in the top bar);
 startup errors are written to `%LOCALAPPDATA%\SpecDash\specdash.log`.
@@ -69,7 +69,7 @@ git tag v0.1.0 && git push origin v0.1.0
 ```
 
 The workflow builds a one-folder PyInstaller bundle, smoke-tests it (starts the exe and requests
-the page and every bundled script), and attaches `.zip` and `.7z` archives to the GitHub Release.
+the page and every bundled script), and attaches a `.zip` archive to the GitHub Release.
 It can also be started manually from the Actions tab; those runs only upload a build artifact.
 
 To build locally on Windows:
