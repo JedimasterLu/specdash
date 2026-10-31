@@ -16,6 +16,7 @@ are linearly interpolated onto the wavelength grid of the first signal.
 from __future__ import annotations
 
 import io
+import json
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -429,6 +430,53 @@ def process(
     )
 
 
+def _export_columns(result: Result, include_inputs: bool) -> dict[str, FloatArray]:
+    """Collect the named columns written by every export format."""
+    columns: dict[str, FloatArray] = {"wavelength_nm": result.wavelength}
+    if result.x_label != X_AXIS_LABELS[XAxis.WAVELENGTH]:
+        columns[result.x_label] = result.x
+    for name, values in result.curves.items():
+        columns[f"{name} [{result.formula}]"] = values
+    if include_inputs:
+        for name, values in result.inputs.items():
+            columns[f"{name} ({result.intensity_unit})"] = values
+    return columns
+
+
+def export_bytes(result: Result, mode: Mode, fmt: str = "csv", include_inputs: bool = True) -> bytes:
+    """Render a result in any supported export format.
+
+    Args:
+        result: Processed result.
+        mode: Measurement mode, used for the header.
+        fmt: One of ``"csv"``, ``"txt"``, ``"npy"`` (structured array with one
+            float field per column) or ``"json"``.
+        include_inputs: Also export the normalized input spectra.
+
+    Returns:
+        The encoded file content.
+    """
+    if fmt == "npy":
+        columns = _export_columns(result, include_inputs)
+        table = np.empty(len(result.wavelength), dtype=[(name, "f8") for name in columns])
+        for name, values in columns.items():
+            table[name] = values
+        buffer = io.BytesIO()
+        np.save(buffer, table)
+        return buffer.getvalue()
+    if fmt == "json":
+        columns = _export_columns(result, include_inputs)
+        payload = {
+            "mode": mode.label,
+            "quantity": result.y_label,
+            "formula": result.formula,
+            "input_intensity_unit": result.intensity_unit,
+            "columns": {name: [None if not np.isfinite(v) else float(v) for v in values] for name, values in columns.items()},
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    return export_table(result, mode, fmt, include_inputs).encode("utf-8")
+
+
 def export_table(result: Result, mode: Mode, fmt: str = "csv", include_inputs: bool = True) -> str:
     """Render a result as a delimited text table.
 
@@ -442,14 +490,7 @@ def export_table(result: Result, mode: Mode, fmt: str = "csv", include_inputs: b
     Returns:
         The table as a string.
     """
-    columns: dict[str, FloatArray] = {"wavelength_nm": result.wavelength}
-    if result.x_label != X_AXIS_LABELS[XAxis.WAVELENGTH]:
-        columns[result.x_label] = result.x
-    for name, values in result.curves.items():
-        columns[f"{name} [{result.formula}]"] = values
-    if include_inputs:
-        for name, values in result.inputs.items():
-            columns[f"{name} ({result.intensity_unit})"] = values
+    columns = _export_columns(result, include_inputs)
 
     delimiter = "," if fmt == "csv" else "\t"
     buffer = io.StringIO()
