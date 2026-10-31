@@ -32,9 +32,9 @@ BACKGROUND_STYLES: dict[str, tuple[str, str]] = {
 """Color and dash style per background role symbol."""
 
 TEXT_PRIMARY = "#0b0b0b"
-TEXT_SECONDARY = "#52514e"
-GRID = "#ebeae6"
-AXIS = "#c9c8c2"
+TEXT_SECONDARY = "#50555e"
+GRID = "#eceef1"
+AXIS = "#c9cdd4"
 SURFACE = "#ffffff"
 FONT_FAMILY = 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
 

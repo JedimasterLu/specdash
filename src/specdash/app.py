@@ -48,6 +48,9 @@ ROWS_GRAPH_DEFAULT_STYLE = {"height": "72px"}
 ROWS_PLOT_CHROME_PX = 52
 """Vertical space taken by the top and bottom margins of the image graph."""
 
+LASER_LINES_NM = (325, 405, 532, 633, 785, 1064)
+"""Popular excitation wavelengths marked on the excitation slider, from UV to NIR."""
+
 EXPORT_FORMATS = ("csv", "txt", "npy", "json")
 
 ROWS_GRAPH_CONFIG: dict[str, object] = {"displayModeBar": False, "responsive": True, "doubleClick": False}
@@ -83,6 +86,11 @@ def _upload_slot(role: Role) -> html.Div:
                 multiple=multiple,
                 accept=".asc,.txt,.csv",
                 className="dropzone",
+                style_active={
+                    "borderStyle": "dashed",
+                    "borderColor": "var(--accent)",
+                    "backgroundColor": "var(--accent-soft)",
+                },
                 children=html.Div(
                     [
                         "Drop ",
@@ -204,15 +212,13 @@ def build_layout(quit_button: bool = False) -> html.Div:
                         id="excitation-field",
                         children=[
                             html.Label("Excitation wavelength (nm)", className="field-label"),
-                            dcc.Input(
+                            dcc.Slider(
                                 id="excitation",
-                                type="number",
+                                min=LASER_LINES_NM[0],
+                                max=LASER_LINES_NM[-1],
                                 value=532,
-                                min=100,
-                                max=2000,
-                                step="any",
-                                className="text-input",
-                                debounce=True,
+                                step=1,
+                                marks={line: str(line) for line in LASER_LINES_NM},
                             ),
                         ],
                     ),
@@ -233,10 +239,9 @@ def build_layout(quit_button: bool = False) -> html.Div:
                         id="smooth",
                         min=0,
                         max=51,
-                        step=2,
+                        step=1,
                         value=0,
                         marks={0: "off", 11: "11", 21: "21", 31: "31", 51: "51"},
-                        tooltip={"placement": "bottom"},
                     ),
                 ],
             ),
@@ -570,6 +575,17 @@ def register_callbacks(app: Dash) -> None:
             if kept[0] < kept[1]:
                 return lo, hi, kept
         return lo, hi, [lo, hi]
+
+    @app.callback(
+        Output("smooth", "value"),
+        Input("smooth", "value"),
+        prevent_initial_call=True,
+    )
+    def on_smooth(window: int | None) -> int:
+        """Keep the smoothing window at 0 (off) or an odd length of at least 3."""
+        if window is None or window <= 0:
+            return 0
+        return max(3, int(window) | 1)
 
     @app.callback(
         Output("rows", "data"),
