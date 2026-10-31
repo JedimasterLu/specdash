@@ -53,11 +53,9 @@ html, body {
 }
 
 h2 {
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: var(--text-2);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
   margin: 0 0 var(--gap-title);
 }
 h2.inline { display: inline-block; margin: 0 10px 0 0; }
@@ -390,3 +388,14 @@ h2 + .field-label, .card-head + .field-label { margin-top: 0; }
 }
 .export-menu.dash-dropdown:hover { background: var(--bg); border-color: var(--border); }
 .export-menu .dash-dropdown-placeholder { color: var(--text); font-weight: 700; }
+
+/* Detector image readout, level with the "Image view" label (see rows_readout.js). */
+.field-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: var(--gap-group) 0 var(--gap-label);
+}
+.field-row .field-label { margin: 0; }
+.rows-hover { font-variant-numeric: tabular-nums; white-space: nowrap; }

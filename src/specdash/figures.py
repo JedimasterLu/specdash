@@ -267,7 +267,7 @@ def rows_figure(
             zmax=float(high) if high > low else float(low) + 1.0,
             colorscale=[[0, "#000000"], [1, "#ffffff"]],
             showscale=False,
-            hovertemplate="row %{y}<br>%{x:.1f} nm<br>%{z:.4g}<extra></extra>",
+            hoverinfo="none",  # the readout is written next to the title by assets/rows_readout.js
         )
     )
     axis = {

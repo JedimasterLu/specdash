@@ -155,7 +155,13 @@ def build_layout(quit_button: bool = False) -> html.Div:
                     ),
                     html.Label("Signal", className="field-label"),
                     dcc.Dropdown(id="rows-signal", clearable=False, searchable=False, placeholder="File name"),
-                    html.Label("Image view", className="field-label"),
+                    html.Div(
+                        className="field-row",
+                        children=[
+                            html.Label("Image view", className="field-label"),
+                            html.Span(id="rows-hover", className="rows-hover muted small"),
+                        ],
+                    ),
                     html.Div(
                         className="rows-wrap",
                         children=dcc.Graph(
