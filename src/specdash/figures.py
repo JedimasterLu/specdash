@@ -32,9 +32,9 @@ BACKGROUND_STYLES: dict[str, tuple[str, str]] = {
 """Color and dash style per background role symbol."""
 
 TEXT_PRIMARY = "#0b0b0b"
-TEXT_SECONDARY = "#52514e"
-GRID = "#ebeae6"
-AXIS = "#c9c8c2"
+TEXT_SECONDARY = "#50555e"
+GRID = "#eceef1"
+AXIS = "#c9cdd4"
 SURFACE = "#ffffff"
 FONT_FAMILY = 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
 
@@ -267,7 +267,7 @@ def rows_figure(
             zmax=float(high) if high > low else float(low) + 1.0,
             colorscale=[[0, "#000000"], [1, "#ffffff"]],
             showscale=False,
-            hovertemplate="row %{y}<br>%{x:.1f} nm<br>%{z:.4g}<extra></extra>",
+            hoverinfo="none",  # the readout is written next to the title by assets/rows_readout.js
         )
     )
     axis = {

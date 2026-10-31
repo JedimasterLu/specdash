@@ -26,7 +26,7 @@ from specdash.processing import (
     Result,
     Role,
     XAxis,
-    export_table,
+    export_bytes,
     process,
 )
 
@@ -47,6 +47,11 @@ RowsData = dict[str, int]
 ROWS_GRAPH_DEFAULT_STYLE = {"height": "72px"}
 ROWS_PLOT_CHROME_PX = 52
 """Vertical space taken by the top and bottom margins of the image graph."""
+
+LASER_LINES_NM = (325, 405, 532, 633, 785, 1064)
+"""Popular excitation wavelengths marked on the excitation slider, from UV to NIR."""
+
+EXPORT_FORMATS = ("csv", "txt", "npy", "json")
 
 ROWS_GRAPH_CONFIG: dict[str, object] = {"displayModeBar": False, "responsive": True, "doubleClick": False}
 
@@ -81,6 +86,11 @@ def _upload_slot(role: Role) -> html.Div:
                 multiple=multiple,
                 accept=".asc,.txt,.csv",
                 className="dropzone",
+                style_active={
+                    "borderStyle": "dashed",
+                    "borderColor": "var(--accent)",
+                    "backgroundColor": "var(--accent-soft)",
+                },
                 children=html.Div(
                     [
                         "Drop ",
@@ -98,7 +108,7 @@ def _upload_slot(role: Role) -> html.Div:
 
 
 def _mode_options() -> list[dict[str, Any]]:
-    """Radio options for the measurement mode selector."""
+    """Dropdown options for the measurement mode selector."""
     return [{"label": mode.label, "value": key} for key, mode in MODES.items()]
 
 
@@ -119,13 +129,12 @@ def build_layout(quit_button: bool = False) -> html.Div:
                 className="card",
                 children=[
                     html.H2("Measurement"),
-                    dcc.RadioItems(
+                    dcc.Dropdown(
                         id="mode",
                         options=_mode_options(),
                         value="pl",
-                        className="pills",
-                        inputClassName="pill-input",
-                        labelClassName="pill",
+                        clearable=False,
+                        searchable=False,
                     ),
                     html.Div(id="mode-description", className="muted small"),
                 ],
@@ -153,8 +162,14 @@ def build_layout(quit_button: bool = False) -> html.Div:
                         ],
                     ),
                     html.Label("Signal", className="field-label"),
-                    dcc.Dropdown(id="rows-signal", clearable=False, searchable=False, style={"marginBottom": "10px"}),
-                    html.Label("Image view", className="field-label"),
+                    dcc.Dropdown(id="rows-signal", clearable=False, searchable=False, placeholder="File name"),
+                    html.Div(
+                        className="field-row",
+                        children=[
+                            html.Label("Image view", className="field-label"),
+                            html.Span(id="rows-hover", className="rows-hover muted small"),
+                        ],
+                    ),
                     html.Div(
                         className="rows-wrap",
                         children=dcc.Graph(
@@ -181,7 +196,6 @@ def build_layout(quit_button: bool = False) -> html.Div:
                         value=[0, 1],
                         allowCross=False,
                     ),
-                    html.Div(style={"height": "14px"}),
                     dcc.RadioItems(
                         id="x-axis",
                         options=[
@@ -198,15 +212,13 @@ def build_layout(quit_button: bool = False) -> html.Div:
                         id="excitation-field",
                         children=[
                             html.Label("Excitation wavelength (nm)", className="field-label"),
-                            dcc.Input(
+                            dcc.Slider(
                                 id="excitation",
-                                type="number",
+                                min=LASER_LINES_NM[0],
+                                max=LASER_LINES_NM[-1],
                                 value=532,
-                                min=100,
-                                max=2000,
-                                step="any",
-                                className="text-input",
-                                debounce=True,
+                                step=1,
+                                marks={line: str(line) for line in LASER_LINES_NM},
                             ),
                         ],
                     ),
@@ -227,10 +239,9 @@ def build_layout(quit_button: bool = False) -> html.Div:
                         id="smooth",
                         min=0,
                         max=51,
-                        step=2,
+                        step=1,
                         value=0,
                         marks={0: "off", 11: "11", 21: "21", 31: "31", 51: "51"},
-                        tooltip={"placement": "bottom"},
                     ),
                 ],
             ),
@@ -251,21 +262,6 @@ def build_layout(quit_button: bool = False) -> html.Div:
                                     html.H2("Result", className="inline"),
                                     html.Code(id="formula", className="formula"),
                                 ]
-                            ),
-                            html.Div(
-                                className="actions",
-                                children=[
-                                    dcc.Checklist(
-                                        id="export-inputs",
-                                        options=[{"label": "Include inputs", "value": "yes"}],
-                                        value=["yes"],
-                                        className="checks inline",
-                                        labelClassName="check",
-                                    ),
-                                    html.Button("Export CSV", id="export-csv", className="btn"),
-                                    html.Button("Export TXT", id="export-txt", className="btn"),
-                                    dcc.Download(id="download"),
-                                ],
                             ),
                         ],
                     ),
@@ -303,7 +299,16 @@ def build_layout(quit_button: bool = False) -> html.Div:
                     html.Div(
                         className="actions",
                         children=[
-                            html.Span("Andor .asc spectral processing", className="muted"),
+                            dcc.Dropdown(
+                                id="export-format",
+                                options=[{"label": fmt.upper(), "value": fmt} for fmt in EXPORT_FORMATS],
+                                value=None,
+                                placeholder="Export",
+                                clearable=False,
+                                searchable=False,
+                                className="export-menu",
+                            ),
+                            dcc.Download(id="download"),
                             *(
                                 [
                                     html.Button("Quit", id="quit", className="btn", n_clicks=0),
@@ -572,6 +577,17 @@ def register_callbacks(app: Dash) -> None:
         return lo, hi, [lo, hi]
 
     @app.callback(
+        Output("smooth", "value"),
+        Input("smooth", "value"),
+        prevent_initial_call=True,
+    )
+    def on_smooth(window: int | None) -> int:
+        """Keep the smoothing window at 0 (off) or an odd length of at least 3."""
+        if window is None or window <= 0:
+            return 0
+        return max(3, int(window) | 1)
+
+    @app.callback(
         Output("rows", "data"),
         Input(f"store-{Role.SIGNAL}", "data"),
         Input("rows-reset", "n_clicks"),
@@ -590,12 +606,15 @@ def register_callbacks(app: Dash) -> None:
     @app.callback(
         Output("rows-signal", "options"),
         Output("rows-signal", "value"),
+        Output("rows-signal", "disabled"),
         Input(f"store-{Role.SIGNAL}", "data"),
         State("rows-signal", "value"),
     )
-    def on_rows_signal(signals: StoreData | None, current: int | None) -> tuple[list[dict[str, Any]], int]:
+    def on_rows_signal(signals: StoreData | None, current: int | None) -> tuple[list[dict[str, Any]], int | None, bool]:
         options = [{"label": item["name"], "value": i} for i, item in enumerate(signals or [])]
-        return options, current if current is not None and current < len(options) else 0
+        if not options:
+            return options, None, True
+        return options, current if current is not None and current < len(options) else 0, False
 
     @app.callback(
         Output("rows-graph", "figure"),
@@ -674,9 +693,8 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("download", "data"),
-        Input("export-csv", "n_clicks"),
-        Input("export-txt", "n_clicks"),
-        State("export-inputs", "value"),
+        Output("export-format", "value"),
+        Input("export-format", "value"),
         State("mode", "value"),
         State("quantity", "value"),
         State("normalize", "value"),
@@ -689,9 +707,7 @@ def register_callbacks(app: Dash) -> None:
         prevent_initial_call=True,
     )
     def export(
-        _csv: int | None,
-        _txt: int | None,
-        include_inputs: list[str] | None,
+        fmt: str | None,
         mode_key: str,
         quantity: str | None,
         normalize: list[str] | None,
@@ -701,20 +717,21 @@ def register_callbacks(app: Dash) -> None:
         excitation: float | None,
         wl_range: list[float] | None,
         *stores: StoreData | None,
-    ) -> dict[str, Any]:
+    ) -> tuple[Any, None]:
+        if fmt not in EXPORT_FORMATS:
+            raise PreventUpdate
         store_map = dict(zip(Role, stores, strict=True))
         if not store_map[Role.SIGNAL]:
-            raise PreventUpdate
+            return no_update, None
         options = _build_options(normalize, rows, smooth, x_axis, excitation, quantity, wl_range)
         try:
             mode, signals, result = _run(mode_key, store_map, options)
         except ValueError:
-            raise PreventUpdate from None
-        fmt = "csv" if ctx.triggered_id == "export-csv" else "txt"
-        text = export_table(result, mode, fmt, include_inputs=bool(include_inputs))
+            return no_update, None
+        content = export_bytes(result, mode, fmt)
         stem = Path(signals[0].name).stem
         quantity_key = mode.quantity(quantity).key
-        return dcc.send_string(text, filename=f"{stem}_{mode.key}_{quantity_key}.{fmt}")
+        return dcc.send_bytes(content, filename=f"{stem}_{mode.key}_{quantity_key}.{fmt}"), None
 
 
 def register_quit_callback(app: Dash) -> None:
