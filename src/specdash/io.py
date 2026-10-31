@@ -66,11 +66,17 @@ class AndorSpectrum:
         Returns:
             Row-averaged counts, shape ``(n_pixels,)``.
         """
-        if rows is None:
-            return self.frames.mean(axis=1)
-        first = int(np.clip(rows[0], 0, self.n_rows - 1))
-        last = int(np.clip(rows[1], first, self.n_rows - 1))
-        return self.frames[:, first : last + 1].mean(axis=1)
+        cache: dict[Any, FloatArray] = self.__dict__.setdefault("_counts_cache", {})
+        if rows not in cache:
+            if rows is None:
+                mean = self.frames.mean(axis=1)
+            else:
+                first = int(np.clip(rows[0], 0, self.n_rows - 1))
+                last = int(np.clip(rows[1], first, self.n_rows - 1))
+                mean = self.frames[:, first : last + 1].mean(axis=1)
+            mean.setflags(write=False)
+            cache[rows] = mean
+        return cache[rows]
 
     def rate(
         self,

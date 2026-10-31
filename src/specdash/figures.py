@@ -66,6 +66,7 @@ def _base_layout(x_label: str, y_label: str, show_legend: bool) -> dict[str, obj
         "spikethickness": 1,
         "spikedash": "solid",
         "spikecolor": AXIS,
+        "spikesnap": "cursor",
     }
     return {
         "paper_bgcolor": SURFACE,

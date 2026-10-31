@@ -6,6 +6,7 @@ import base64
 import math
 import os
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,8 @@ ROLE_HINTS: dict[Role, str] = {
 }
 
 StoreData = list[dict[str, Any]]
+# Parsed spectra stay on the server; the browser stores only small descriptors.
+_SPECTRA: dict[str, AndorSpectrum] = {}
 RowsData = dict[str, int]
 
 ROWS_GRAPH_DEFAULT_STYLE = {"height": "72px"}
@@ -345,7 +348,15 @@ def _decode_upload(contents: str, filename: str) -> AndorSpectrum:
 
 def _load(store: StoreData | None) -> list[AndorSpectrum]:
     """Deserialize spectra from a ``dcc.Store``."""
-    return [AndorSpectrum.from_dict(item) for item in store or []]
+    return [_SPECTRA[item["id"]] for item in store or [] if item["id"] in _SPECTRA]
+
+
+def _register(spectrum: AndorSpectrum) -> dict[str, Any]:
+    """Keep ``spectrum`` on the server and return its descriptor for a ``dcc.Store``."""
+    key = uuid.uuid4().hex
+    _SPECTRA[key] = spectrum
+    wl = spectrum.wavelength
+    return {"id": key, "name": spectrum.name, "n_rows": spectrum.n_rows, "wl": [float(wl[0]), float(wl[-1])]}
 
 
 def _build_options(
@@ -468,7 +479,7 @@ def _register_slot_callbacks(app: Dash, role: Role) -> None:
         errors: list[str] = []
         for content, name in zip(content_list, name_list, strict=False):
             try:
-                loaded.append(_decode_upload(content, name).to_dict())
+                loaded.append(_register(_decode_upload(content, name)))
             except (ValueError, UnicodeDecodeError) as exc:
                 errors.append(str(exc))
         if multiple:
@@ -553,8 +564,7 @@ def register_callbacks(app: Dash) -> None:
     ) -> tuple[int, int, list[float]]:
         if not signals:
             return 0, 1, [0, 1]
-        wavelength = signals[0]["wavelength"]
-        lo, hi = math.floor(wavelength[0]), math.ceil(wavelength[-1])
+        lo, hi = math.floor(signals[0]["wl"][0]), math.ceil(signals[0]["wl"][1])
         if old_max > 1:  # keep the user's selection, clipped to the new bounds
             kept = [max(current[0], lo), min(current[1], hi)]
             if kept[0] < kept[1]:
@@ -569,7 +579,7 @@ def register_callbacks(app: Dash) -> None:
     )
     def on_rows(*args: Any) -> RowsData | None:
         signals, _reset, current = args
-        counts = [len(item["frames"][0]) for item in signals or [] if item["frames"]]
+        counts = [item["n_rows"] for item in signals or []]
         if not counts:
             return None
         count = min(counts)
@@ -600,7 +610,7 @@ def register_callbacks(app: Dash) -> None:
     ) -> tuple[Any, dict[str, str], str]:
         if not signals:
             return empty_figure("Upload a signal spectrum"), ROWS_GRAPH_DEFAULT_STYLE, ""
-        spectrum = AndorSpectrum.from_dict(signals[index if index is not None and index < len(signals) else 0])
+        spectrum = _load([signals[index if index is not None and index < len(signals) else 0]])[0]
         figure = rows_figure(
             spectrum.wavelength,
             spectrum.frames,
