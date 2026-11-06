@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec producing a one-folder SpecDash build.
+"""PyInstaller spec producing a one-folder SpecDash build for Windows (macOS uses py2app).
 
 Build from the repository root with a runtime-only environment::
 
@@ -17,20 +17,26 @@ ROOT = Path(SPECPATH).resolve().parent  # noqa: F821  (SPECPATH is injected by P
 EXCLUDES = [
     "tkinter",
     "_tkinter",
-    "matplotlib",
+    "matplotlib.tests",
+    "PyQt5",
+    "PyQt6",
+    "PySide2",
+    "PySide6",
     "IPython",
     "ipykernel",
     "pytest",
     "scipy",
     "pandas",
-    "PIL",
     "dash.testing",
 ]
 
 a = Analysis(  # noqa: F821
     [str(ROOT / "packaging" / "launcher.py")],
     pathex=[str(ROOT / "src")],
-    datas=[(str(ROOT / "src" / "specdash" / "assets"), "specdash/assets")],
+    datas=[
+        (str(ROOT / "src" / "specdash" / "assets"), "specdash/assets"),
+        (str(ROOT / "src" / "specdash" / "vendor"), "specdash/vendor"),
+    ],
     hiddenimports=[],
     hookspath=[str(ROOT / "packaging" / "hooks")],
     excludes=EXCLUDES,
@@ -46,7 +52,7 @@ exe = EXE(  # noqa: F821
     exclude_binaries=True,
     name="SpecDash",
     icon=str(ROOT / "packaging" / "specdash.ico"),
-    console=False,  # no terminal window; output goes to a log file and the app has a Quit button
+    console=False,  # no terminal window; output goes to a log file
     upx=False,  # UPX increases antivirus false positives
 )
 coll = COLLECT(  # noqa: F821
