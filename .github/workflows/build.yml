@@ -61,7 +61,7 @@ jobs:
           path: SpecDash-*-windows-x64.zip
 
   macos:
-    runs-on: macos-14 # Apple silicon
+    runs-on: macos-latest # Apple silicon
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
