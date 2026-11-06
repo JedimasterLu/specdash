@@ -82,7 +82,9 @@ jobs:
       - name: Build with py2app
         run: |
           python packaging/make_icns.py
-          python packaging/setup_macos.py py2app
+          # Run from packaging/: py2app rejects the install_requires that setuptools
+          # derives from the pyproject.toml in the repository root.
+          (cd packaging && python setup_macos.py py2app --dist-dir ../dist)
           python packaging/copy_metadata_macos.py dist/SpecDash.app
 
       - name: Self-test

@@ -87,5 +87,5 @@ To build locally:
 ```bash
 uv sync --no-dev --group build
 uv run --no-sync pyinstaller packaging/specdash.spec --noconfirm        # Windows -> dist/SpecDash/
-uv run --no-sync python packaging/setup_macos.py py2app                 # macOS   -> dist/SpecDash.app
+(cd packaging && uv run --no-sync python setup_macos.py py2app --dist-dir ../dist)   # macOS -> dist/SpecDash.app
 ```

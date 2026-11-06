@@ -1,9 +1,10 @@
 """py2app configuration producing ``dist/SpecDash.app``.
 
-Build from the repository root (after ``pip install . py2app``)::
+Build after ``pip install . py2app``. Run it from ``packaging/``, because py2app rejects
+the ``install_requires`` that setuptools derives from the repository's pyproject.toml::
 
     python packaging/make_icns.py          # optional: packaging/specdash.icns
-    python packaging/setup_macos.py py2app
+    cd packaging && python setup_macos.py py2app --dist-dir ../dist
 """
 
 from pathlib import Path
