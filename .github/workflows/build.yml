@@ -19,9 +19,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
@@ -55,7 +55,7 @@ jobs:
           $name = "SpecDash-$env:VERSION-windows-x64"
           Compress-Archive -Path dist\SpecDash -DestinationPath "$name.zip" -CompressionLevel Optimal
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: SpecDash-${{ env.VERSION }}-windows-x64
           path: SpecDash-*-windows-x64.zip
@@ -64,9 +64,9 @@ jobs:
     runs-on: macos-latest # Apple silicon
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -85,7 +85,7 @@ jobs:
           # Run from packaging/: py2app rejects the install_requires that setuptools
           # derives from the pyproject.toml in the repository root.
           (cd packaging && python setup_macos.py py2app --dist-dir ../dist)
-          python packaging/copy_metadata_macos.py dist/SpecDash.app
+          python packaging/postprocess_macos.py dist/SpecDash.app
 
       - name: Self-test
         run: dist/SpecDash.app/Contents/MacOS/SpecDash --selftest || { cat ~/Library/Logs/SpecDash/specdash.log 2>/dev/null; exit 1; }
@@ -93,7 +93,7 @@ jobs:
       - name: Package
         run: ditto -c -k --sequesterRsrc --keepParent dist/SpecDash.app "SpecDash-$VERSION-macos-arm64.zip"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: SpecDash-${{ env.VERSION }}-macos-arm64
           path: SpecDash-*-macos-arm64.zip
@@ -103,10 +103,10 @@ jobs:
     needs: [windows, macos]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: SpecDash-*.zip
           generate_release_notes: true

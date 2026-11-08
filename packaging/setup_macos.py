@@ -16,6 +16,7 @@ ICON = ROOT / "packaging" / "specdash.icns"
 
 OPTIONS = {
     "argv_emulation": False,  # would interfere with the GUI event loop
+    "optimize": 2,  # strip asserts and docstrings, like the Windows build
     "packages": [
         "specdash",  # includes assets/
         "dash",
