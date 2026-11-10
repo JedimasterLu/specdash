@@ -1,0 +1,14 @@
+{
+  "name": "specdash-plotly-bundle",
+  "private": true,
+  "description": "Builds the slim plotly.js bundle (core + scatter + heatmap) served by SpecDash.",
+  "scripts": {
+    "build": "esbuild entry.js --bundle --minify --format=iife --legal-comments=inline --target=es2018 --loader:.css=empty --define:global=globalThis --outfile=../../src/specdash/vendor/plotly-slim.min.js"
+  },
+  "dependencies": {
+    "plotly.js": "4.1.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.0"
+  }
+}

@@ -1,13 +1,15 @@
 [project]
 name = "specdash"
-version = "0.2.0"
-description = "Interactive processing and visualization of Andor Solis .asc spectra."
+version = "0.3.0"
+description = "Desktop app for interactive processing and visualization of Andor Solis .asc spectra."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "dash>=4.0",
+    "matplotlib>=3.9",
     "numpy>=2.0",
     "plotly>=5.22",
+    "pywebview>=5.3",
 ]
 
 [project.scripts]
@@ -22,9 +24,9 @@ packages = ["src/specdash"]
 
 [dependency-groups]
 build = [
-    "pyinstaller>=6.10",
+    "pyinstaller>=6.10; sys_platform == 'win32'",
+    "py2app>=0.28; sys_platform == 'darwin'",
 ]
 dev = [
     "ipykernel>=7.2.0",
-    "matplotlib>=3.10.9",
 ]

@@ -1,21 +1,18 @@
-"""Dash application: layout and callbacks."""
+"""Dash application: layout and callbacks (hosted in a pywebview window, see ``desktop``)."""
 
 from __future__ import annotations
 
-import base64
 import math
-import os
-import threading
-import uuid
 from pathlib import Path
 from typing import Any
 
 from dash import ALL, Dash, Input, Output, State, ctx, dcc, html, no_update
 from dash.exceptions import PreventUpdate
+from flask import request, send_file
 
-from specdash import __version__, lifecycle
+from specdash import __version__, desktop, mplexport, store
 from specdash.figures import GRAPH_CONFIG, empty_figure, image_ratio, inputs_figure, result_figure, rows_figure
-from specdash.io import AndorSpectrum, parse_asc
+from specdash.io import AndorSpectrum
 from specdash.processing import (
     MODES,
     ROLE_LABELS,
@@ -31,6 +28,7 @@ from specdash.processing import (
 )
 
 ASSETS_DIR = Path(__file__).parent / "assets"
+SLIM_PLOTLY = "vendor/plotly-slim.min.js"
 
 ROLE_HINTS: dict[Role, str] = {
     Role.SIGNAL: "Sample spectrum. Multiple files are processed together.",
@@ -40,8 +38,6 @@ ROLE_HINTS: dict[Role, str] = {
 }
 
 StoreData = list[dict[str, Any]]
-# Parsed spectra stay on the server; the browser stores only small descriptors.
-_SPECTRA: dict[str, AndorSpectrum] = {}
 RowsData = dict[str, int]
 
 ROWS_GRAPH_DEFAULT_STYLE = {"height": "72px"}
@@ -51,7 +47,7 @@ ROWS_PLOT_CHROME_PX = 52
 LASER_LINES_NM = (325, 405, 532, 633, 785, 1064)
 """Popular excitation wavelengths marked on the excitation slider, from UV to NIR."""
 
-EXPORT_FORMATS = ("csv", "txt", "npy", "json")
+EXPORT_FORMATS = ("csv", "txt", "npy", "json", "png")
 
 ROWS_GRAPH_CONFIG: dict[str, object] = {"displayModeBar": False, "responsive": True, "doubleClick": False}
 
@@ -81,24 +77,16 @@ def _upload_slot(role: Role) -> html.Div:
                     html.Button("Clear", id=f"clear-{role}", className="btn-link", n_clicks=0),
                 ],
             ),
-            dcc.Upload(
+            # Files arrive as paths through assets/desktop.js and desktop.py, not as browser uploads.
+            html.Div(
                 id=f"upload-{role}",
-                multiple=multiple,
-                accept=".asc,.txt,.csv",
                 className="dropzone",
-                style_active={
-                    "borderStyle": "dashed",
-                    "borderColor": "var(--accent)",
-                    "backgroundColor": "var(--accent-soft)",
-                },
-                children=html.Div(
-                    [
-                        "Drop ",
-                        html.B(".asc" + (" files" if multiple else " file")),
-                        " or ",
-                        html.Span("browse", className="link"),
-                    ]
-                ),
+                children=[
+                    "Drop ",
+                    html.B(".asc" + (" files" if multiple else " file")),
+                    " or ",
+                    html.Span("browse", className="link"),
+                ],
             ),
             html.Div(id=f"files-{role}", className="file-list"),
             html.Div(id=f"error-{role}", className="slot-error"),
@@ -112,12 +100,8 @@ def _mode_options() -> list[dict[str, Any]]:
     return [{"label": mode.label, "value": key} for key, mode in MODES.items()]
 
 
-def build_layout(quit_button: bool = False) -> html.Div:
+def build_layout() -> html.Div:
     """Build the application layout.
-
-    Args:
-        quit_button: Show a button that stops the server and make pages report their
-            presence, for builds without a console.
 
     Returns:
         The root component.
@@ -158,7 +142,12 @@ def build_layout(quit_button: bool = False) -> html.Div:
                         className="card-head",
                         children=[
                             html.H2("Detector rows", className="inline"),
-                            html.Button("All rows", id="rows-reset", className="btn-link", n_clicks=0),
+                            html.Div(
+                                [
+                                    html.Button("Save PNG", id="rows-png", className="btn-link", n_clicks=0),
+                                    html.Button("All rows", id="rows-reset", className="btn-link", n_clicks=0),
+                                ]
+                            ),
                         ],
                     ),
                     html.Label("Signal", className="field-label"),
@@ -180,6 +169,7 @@ def build_layout(quit_button: bool = False) -> html.Div:
                     ),
                     html.Div(id="rows-label", className="muted small"),
                     dcc.Store(id="rows", data=None),
+                    dcc.Store(id="rows-png-done"),
                 ],
             ),
             html.Section(
@@ -308,21 +298,13 @@ def build_layout(quit_button: bool = False) -> html.Div:
                                 searchable=False,
                                 className="export-menu",
                             ),
-                            dcc.Download(id="download"),
-                            *(
-                                [
-                                    html.Button("Quit", id="quit", className="btn", n_clicks=0),
-                                    html.Span(id="quit-status", className="muted small"),
-                                ]
-                                if quit_button
-                                else []
-                            ),
                         ],
                     ),
                 ],
             ),
             html.Div(className="layout", children=[sidebar, main]),
-            *([html.Div(id="heartbeat", hidden=True)] if quit_button else []),
+            # Files loaded by Python (drop / browse) are announced here; see desktop.ingest.
+            dcc.Store(id="dropped", data=None),
         ],
     )
 
@@ -332,36 +314,9 @@ def build_layout(quit_button: bool = False) -> html.Div:
 # --------------------------------------------------------------------------- #
 
 
-def _decode_upload(contents: str, filename: str) -> AndorSpectrum:
-    """Decode a ``dcc.Upload`` payload into a spectrum.
-
-    Args:
-        contents: Data URL produced by ``dcc.Upload``.
-        filename: Original file name.
-
-    Returns:
-        The parsed spectrum.
-    """
-    _, _, payload = contents.partition(",")
-    raw = base64.b64decode(payload)
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        text = raw.decode("latin-1")
-    return parse_asc(text, name=filename)
-
-
-def _load(store: StoreData | None) -> list[AndorSpectrum]:
-    """Deserialize spectra from a ``dcc.Store``."""
-    return [_SPECTRA[item["id"]] for item in store or [] if item["id"] in _SPECTRA]
-
-
-def _register(spectrum: AndorSpectrum) -> dict[str, Any]:
-    """Keep ``spectrum`` on the server and return its descriptor for a ``dcc.Store``."""
-    key = uuid.uuid4().hex
-    _SPECTRA[key] = spectrum
-    wl = spectrum.wavelength
-    return {"id": key, "name": spectrum.name, "n_rows": spectrum.n_rows, "wl": [float(wl[0]), float(wl[-1])]}
+def _load(items: StoreData | None) -> list[AndorSpectrum]:
+    """Look up the spectra behind a ``dcc.Store`` value."""
+    return store.get(items)
 
 
 def _build_options(
@@ -452,47 +407,44 @@ def _register_slot_callbacks(app: Dash, role: Role) -> None:
     @app.callback(
         Output(f"store-{role}", "data"),
         Output(f"error-{role}", "children"),
-        Output(f"upload-{role}", "contents"),
-        Input(f"upload-{role}", "contents"),
+        Input("dropped", "data"),
         Input(f"clear-{role}", "n_clicks"),
         Input({"type": "remove", "role": role.value, "index": ALL}, "n_clicks"),
-        State(f"upload-{role}", "filename"),
         State(f"store-{role}", "data"),
         prevent_initial_call=True,
     )
     def update_store(
-        contents: str | list[str] | None,
+        dropped: dict[str, Any] | None,
         _clear: int,
         _remove: list[int | None],
-        filenames: str | list[str] | None,
-        store: StoreData | None,
-    ) -> tuple[StoreData, str, None]:
+        current: StoreData | None,
+    ) -> tuple[StoreData, str]:
         trigger = ctx.triggered_id
         if trigger == f"clear-{role}":
-            return [], "", None
+            store.discard(current)
+            return [], ""
         if isinstance(trigger, dict) and trigger.get("type") == "remove":
             if not ctx.triggered or not ctx.triggered[0]["value"]:
                 raise PreventUpdate
             index = int(trigger["index"])
-            return [s for i, s in enumerate(store or []) if i != index], "", None
-        if not contents:
+            store.discard([s for i, s in enumerate(current or []) if i == index])
+            return [s for i, s in enumerate(current or []) if i != index], ""
+        if trigger != "dropped" or not dropped or dropped.get("role") != role.value:
             raise PreventUpdate
 
-        content_list = contents if isinstance(contents, list) else [contents]
-        name_list = filenames if isinstance(filenames, list) else [filenames or "file.asc"]
-        loaded: StoreData = []
-        errors: list[str] = []
-        for content, name in zip(content_list, name_list, strict=False):
-            try:
-                loaded.append(_register(_decode_upload(content, name)))
-            except (ValueError, UnicodeDecodeError) as exc:
-                errors.append(str(exc))
+        loaded: StoreData = dropped["items"]
+        errors = " ".join(dropped["errors"])
         if multiple:
             existing = {item["name"] for item in loaded}
-            new_store = [s for s in store or [] if s["name"] not in existing] + loaded
+            replaced = [s for s in current or [] if s["name"] in existing]
+            new_store = [s for s in current or [] if s["name"] not in existing] + loaded
+        elif loaded:
+            replaced, new_store = list(current or []), loaded[:1]
+            store.discard(loaded[1:])
         else:
-            new_store = loaded[:1] if loaded else list(store or [])
-        return new_store, " ".join(errors), None
+            replaced, new_store = [], list(current or [])
+        store.discard(replaced)
+        return new_store, errors
 
     @app.callback(Output(f"files-{role}", "children"), Input(f"store-{role}", "data"))
     def render_files(store: StoreData | None) -> list[html.Div]:
@@ -631,8 +583,7 @@ def register_callbacks(app: Dash) -> None:
             return empty_figure("Upload a signal spectrum"), ROWS_GRAPH_DEFAULT_STYLE, ""
         spectrum = _load([signals[index if index is not None and index < len(signals) else 0]])[0]
         figure = rows_figure(
-            spectrum.wavelength,
-            spectrum.frames,
+            spectrum,
             (rows["first"], rows["last"]) if rows else None,
             rows["count"] if rows else None,
         )
@@ -692,7 +643,6 @@ def register_callbacks(app: Dash) -> None:
         return result_figure(result, order), inputs_figure(result, order), result.formula, alerts, meta
 
     @app.callback(
-        Output("download", "data"),
         Output("export-format", "value"),
         Input("export-format", "value"),
         State("mode", "value"),
@@ -717,48 +667,74 @@ def register_callbacks(app: Dash) -> None:
         excitation: float | None,
         wl_range: list[float] | None,
         *stores: StoreData | None,
-    ) -> tuple[Any, None]:
+    ) -> None:
         if fmt not in EXPORT_FORMATS:
             raise PreventUpdate
         store_map = dict(zip(Role, stores, strict=True))
         if not store_map[Role.SIGNAL]:
-            return no_update, None
+            return None
         options = _build_options(normalize, rows, smooth, x_axis, excitation, quantity, wl_range)
         try:
             mode, signals, result = _run(mode_key, store_map, options)
         except ValueError:
-            return no_update, None
-        content = export_bytes(result, mode, fmt)
+            return None
+        if fmt == "png":
+            content = mplexport.result_png(result, [s.name for s in signals])
+        else:
+            content = export_bytes(result, mode, fmt)
         stem = Path(signals[0].name).stem
         quantity_key = mode.quantity(quantity).key
-        return dcc.send_bytes(content, filename=f"{stem}_{mode.key}_{quantity_key}.{fmt}"), None
-
-
-def register_quit_callback(app: Dash) -> None:
-    """Register the callback behind the Quit button.
-
-    Args:
-        app: The Dash application.
-    """
+        desktop.save_bytes(f"{stem}_{mode.key}_{quantity_key}.{fmt}", content)
+        return None
 
     @app.callback(
-        Output("quit-status", "children"),
-        Input("quit", "n_clicks"),
+        Output("rows-png-done", "data"),
+        Input("rows-png", "n_clicks"),
+        State(f"store-{Role.SIGNAL}", "data"),
+        State("rows", "data"),
+        State("rows-signal", "value"),
         prevent_initial_call=True,
     )
-    def quit_app(_clicks: int) -> str:
-        # Exit after the response has been sent so the page can show the message.
-        threading.Timer(0.5, os._exit, args=(0,)).start()
-        return "SpecDash stopped. You can close this tab."
+    def export_rows_png(
+        _clicks: int, signals: StoreData | None, rows: RowsData | None, index: int | None
+    ) -> Any:
+        if not signals:
+            raise PreventUpdate
+        spectrum = _load([signals[index if index is not None and index < len(signals) else 0]])[0]
+        content = mplexport.rows_png(
+            spectrum.wavelength, spectrum.frames, (rows["first"], rows["last"]) if rows else None
+        )
+        desktop.save_bytes(f"{Path(spectrum.name).stem}_rows.png", content)
+        return no_update
 
 
-def create_app(quit_button: bool = False) -> Dash:
+PLOTLY_URL = "/_dash-component-suites/plotly/package_data/plotly.min.js"
+"""Where dash-renderer fetches plotly.js from (hard-coded in the renderer)."""
+
+
+def _use_slim_plotly(app: Dash) -> None:
+    """Serve the slim plotly.js bundle (core + scatter + heatmap) instead of the full one.
+
+    ``dcc.Graph`` fetches the 4.8 MB plotly.js with every trace type from
+    ``PLOTLY_URL``. Answering that request from ``vendor/plotly-slim.min.js``
+    (1.1 MB, built by ``tools/plotly-bundle``) keeps the identical Plotly API
+    while loading far less, and lets the bundle drop the plotly package's copy.
+    """
+    slim = ASSETS_DIR.parent / SLIM_PLOTLY
+    # Point Dash's own bookkeeping at our file too, so it never looks for the plotly package's copy.
+    for resource in dcc._js_dist:
+        if resource.get("namespace") == "plotly":
+            resource.update(namespace="specdash", relative_package_path=SLIM_PLOTLY)
+
+    @app.server.before_request
+    def serve_slim_plotly() -> Any:
+        if request.path == PLOTLY_URL:
+            return send_file(slim, mimetype="text/javascript", max_age=86400)
+        return None
+
+
+def create_app() -> Dash:
     """Create and configure the Dash application.
-
-    Args:
-        quit_button: Add a Quit button and quit automatically when the last
-            browser tab closes. Needed when the app runs without a console
-            window that could be closed instead.
 
     Returns:
         The configured application.
@@ -770,9 +746,7 @@ def create_app(quit_button: bool = False) -> Dash:
         suppress_callback_exceptions=True,
         update_title=None,
     )
-    app.layout = build_layout(quit_button)
+    _use_slim_plotly(app)
+    app.layout = build_layout()
     register_callbacks(app)
-    if quit_button:
-        register_quit_callback(app)
-        lifecycle.install(app.server)
     return app

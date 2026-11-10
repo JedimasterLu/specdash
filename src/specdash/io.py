@@ -8,6 +8,7 @@ detector row (image readout) or a single value (full vertical binning).
 
 from __future__ import annotations
 
+import io
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -108,6 +109,35 @@ class AndorSpectrum:
             data = data / self.accumulations
         return data
 
+    def display_image(self, max_columns: int) -> tuple[FloatArray, FloatArray, float, float]:
+        """Return the detector image prepared for display, computed once per spectrum.
+
+        The spectral axis is block-averaged down to ``max_columns`` and the contrast
+        limits are the 1st and 99th percentile of the raw image, so dragging a row
+        selection does not recompute either.
+
+        Args:
+            max_columns: Upper bound on the number of output columns.
+
+        Returns:
+            Wavelength per column, intensities of shape ``(n_rows, n_columns)``,
+            and the lower and upper contrast limits.
+        """
+        cache: dict[int, tuple[FloatArray, FloatArray, float, float]] = self.__dict__.setdefault("_image_cache", {})
+        if max_columns not in cache:
+            image = self.frames.T
+            low, high = np.percentile(image, [1, 99])
+            step = -(-self.wavelength.size // max_columns)
+            if step <= 1:
+                x, z = self.wavelength, image
+            else:
+                edges = np.arange(0, self.wavelength.size, step)
+                sizes = np.diff(np.append(edges, self.wavelength.size))
+                x = np.add.reduceat(self.wavelength, edges) / sizes
+                z = np.add.reduceat(image, edges, axis=1) / sizes
+            cache[max_columns] = (x, z, float(low), float(high))
+        return cache[max_columns]
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
         return {
@@ -176,6 +206,50 @@ def _trim_edge_rows(frames: FloatArray) -> tuple[FloatArray, list[str]]:
     return frames[:, first : frames.shape[1] - last], dropped
 
 
+_NUMERIC_START = frozenset("0123456789+-.")
+
+
+def _slow_block(lines: list[str]) -> list[list[float]]:
+    """Parse a data block line by line, tolerating ragged or partly non-numeric rows.
+
+    Args:
+        lines: Stripped candidate data lines.
+
+    Returns:
+        The rows that consist of at least two numbers, up to the first non-numeric line after them.
+    """
+    rows: list[list[float]] = []
+    for line in lines:
+        parts = [p for p in re.split(r"[,\t;]", line) if p.strip()]
+        try:
+            values = [float(p) for p in parts]
+        except ValueError:
+            if rows:
+                break
+            continue  # text before the data block is header metadata
+        if len(values) >= 2:
+            rows.append(values)
+    return rows
+
+
+def _fast_block(lines: list[str]) -> FloatArray | None:
+    """Parse a rectangular data block with numpy's C text reader.
+
+    Args:
+        lines: Stripped candidate data lines.
+
+    Returns:
+        The array of shape ``(n_lines, n_columns)``, or ``None`` if the block is
+        not a clean rectangular table (the caller then falls back to a slow path).
+    """
+    block = "\n".join(line.rstrip(" ,;\t") for line in lines).replace("\t", ",").replace(";", ",")
+    try:
+        array = np.loadtxt(io.StringIO(block), delimiter=",", dtype=np.float64, ndmin=2)
+    except ValueError:
+        return None
+    return array if array.shape[1] >= 2 else None
+
+
 def parse_asc(text: str, name: str = "spectrum") -> AndorSpectrum:
     """Parse the contents of an Andor ``.asc`` file.
 
@@ -189,41 +263,51 @@ def parse_asc(text: str, name: str = "spectrum") -> AndorSpectrum:
     Raises:
         ValueError: If no numeric data block is found.
     """
-    rows: list[list[float]] = []
-    metadata: dict[str, str] = {}
-    in_data = True
+    data_lines: list[str] = []
+    meta_lines: list[str] = []
+    state = 0  # 0: header, 1: data block, 2: footer
     for raw in text.splitlines():
         line = raw.strip()
-        if in_data:
-            if not line:
-                if rows:
-                    in_data = False
-                continue
-            parts = [p for p in re.split(r"[,\t;]", line) if p.strip()]
-            try:
-                values = [float(p) for p in parts]
-            except ValueError:
-                # Text before the data block is header metadata, after it footer.
-                if rows:
-                    in_data = False
-            else:
-                if len(values) >= 2:
-                    rows.append(values)
-                continue
+        if not line:
+            if state == 1:
+                state = 2
+            continue
+        if state != 2 and line[0] in _NUMERIC_START:
+            state = 1
+            data_lines.append(line)
+            continue
+        if state == 1:
+            state = 2
+        meta_lines.append(line)
+
+    array = _fast_block(data_lines) if data_lines else None
+    if array is None:
+        rows = _slow_block(data_lines)
+        if not rows:
+            raise ValueError(f"{name}: no spectral data found.")
+        width = min(len(r) for r in rows)
+        array = np.array([r[:width] for r in rows], dtype=np.float64)
+
+    metadata: dict[str, str] = {}
+    for line in meta_lines:
         match = _META_PATTERN.match(line)
         if match:
             metadata.setdefault(match.group(1).strip(), match.group(2).strip())
 
-    if not rows:
-        raise ValueError(f"{name}: no spectral data found.")
-    width = min(len(r) for r in rows)
-    array = np.array([r[:width] for r in rows], dtype=np.float64)
-    order = np.argsort(array[:, 0])
-    array = array[order]
+    if not np.all(np.diff(array[:, 0]) >= 0):
+        array = array[np.argsort(array[:, 0], kind="stable")]
     frames, dropped = _trim_edge_rows(array[:, 1:])
     if dropped:
         metadata["Ignored Rows"] = " and ".join(dropped)
-    return AndorSpectrum(name=name, wavelength=array[:, 0], frames=frames, metadata=metadata)
+    return AndorSpectrum(name=name, wavelength=np.ascontiguousarray(array[:, 0]), frames=frames, metadata=metadata)
+
+
+def decode_bytes(raw: bytes) -> str:
+    """Decode file content as UTF-8, falling back to Latin-1."""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("latin-1")
 
 
 def read_asc(path: str | Path) -> AndorSpectrum:
@@ -236,4 +320,4 @@ def read_asc(path: str | Path) -> AndorSpectrum:
         The parsed spectrum, named after the file.
     """
     path = Path(path)
-    return parse_asc(path.read_text(encoding="utf-8", errors="replace"), name=path.name)
+    return parse_asc(decode_bytes(path.read_bytes()), name=path.name)

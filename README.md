@@ -1,36 +1,27 @@
 # SpecDash
 
-Interactive web app for processing Andor Solis `.asc` spectra, built with Plotly Dash.
+Desktop app for processing Andor Solis `.asc` spectra, with a Plotly Dash UI in a pywebview window.
 
-## Download for Windows
+## Download
 
-No Python needed. Download `SpecDash-<version>-windows-x64.zip` from the
-[Releases](../../releases) page, extract it, and double-click `SpecDash\SpecDash.exe`.
-The app opens in your browser (no console window). It stops by itself shortly after you close the browser tab (or click **Quit** in the top bar);
-startup errors are written to `%LOCALAPPDATA%\SpecDash\specdash.log`.
+No Python needed. Download from the [Releases](../../releases) page:
 
-- On first launch Windows SmartScreen may warn about an unknown publisher (the exe is not
-  code-signed). Click **More info → Run anyway**.
-- Extract the whole folder before running; the exe does not work from inside the zip.
-- If port 8050 is busy, a free port is chosen automatically; the browser opens at the chosen address.
+- **Windows**: `SpecDash-<version>-windows-x64.zip`. Extract the whole folder and run `SpecDash\SpecDash.exe`
+  (requires the Edge WebView2 runtime, preinstalled on current Windows). SmartScreen may warn about an unknown
+  publisher because the exe is not code-signed: **More info → Run anyway**.
+- **macOS** (Apple silicon): `SpecDash-<version>-macos-arm64.zip`. Unzip and move `SpecDash.app` to Applications.
+  The app is not notarized; on first launch right-click → **Open**. If macOS says the app is "damaged", run `xattr -cr /Applications/SpecDash.app` once to remove the download quarantine flag, then open it again.
+
+Startup errors are written to `%LOCALAPPDATA%\SpecDash\specdash.log` (Windows) or `~/Library/Logs/SpecDash/specdash.log` (macOS).
 
 ## Install & run (from source)
 
 ```bash
-# with uv (from the project directory)
 uv sync
-uv run specdash
-
-# or as a global tool
-uv tool install .
-specdash
-
-# with pip
-pip install .
-specdash
+uv run specdash          # add --debug for the web inspector
 ```
 
-Options: `specdash --port 8050 --host 127.0.0.1 --no-browser --debug`. `python -m specdash` also works.
+SpecDash is a native window ([pywebview](https://pywebview.flowrl.com/)) around a local Dash server.
 
 On import, a first or last detector row whose mean is more than 5× the mean of the interior rows
 (typically a saturated or artifact row) is ignored and noted in the file metadata table.
@@ -54,30 +45,47 @@ Missing optional inputs are treated as zero, and the app shows a warning when th
 
 ## Features
 
+- Drop several `.asc` files at once anywhere on the window (or onto a specific input slot), or click a slot to browse.
+  Files are read from disk by Python and parsed in parallel, so large batches load quickly.
 - Interactive plots (zoom, pan, hover crosshair, SVG snapshot from the mode bar).
 - X axis in wavelength, photon energy or Raman shift (configurable excitation wavelength).
 - Optional Savitzky–Golay smoothing and detector-row selection.
-- Export the processed curves, plus the normalized inputs if you choose, as CSV or tab-separated TXT.
+- Export the processed curves, plus the normalized inputs, as CSV, TXT, NPY or JSON through a native Save dialog.
+- Export **PNG** figures: the Result curves (Export → PNG) and the detector-row image with the selected rows
+  outlined in blue (**Save PNG** in the Detector rows card). Both use a publication style
+  (Arial 7 pt, 4.5 × 3.5 cm axes, inward ticks, 600 dpi) defined in [mplexport.py](src/specdash/mplexport.py).
 
-## Building the Windows executable
+## Slim plotly.js
 
-Releases are built by GitHub Actions ([build-windows.yml](.github/workflows/build-windows.yml)).
+`dcc.Graph` normally loads the full 4.8 MB plotly.js. SpecDash serves its own 1.1 MB build with only the core,
+`scatter` and `heatmap` ([src/specdash/vendor/](src/specdash/vendor/)), so the Plotly API is unchanged. If you add other
+trace types or upgrade Dash/plotly, rebuild it with Node (version in `tools/plotly-bundle/package.json` must match
+`plotly.offline.get_plotlyjs_version()`):
+
+```bash
+cd tools/plotly-bundle && npm install && npm run build
+```
+
+## Building the apps
+
+Releases are built by GitHub Actions ([build.yml](.github/workflows/build.yml)).
 Bump the version in `pyproject.toml` and `src/specdash/__init__.py`, then push a matching tag:
 
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
-The workflow builds a one-folder PyInstaller bundle, smoke-tests it (starts the exe and requests
-the page and every bundled script), and attaches a `.zip` archive to the GitHub Release.
-It can also be started manually from the Actions tab; those runs only upload a build artifact.
+- **Windows**: PyInstaller one-folder bundle ([packaging/specdash.spec](packaging/specdash.spec)).
+- **macOS**: py2app `.app` bundle ([packaging/setup_macos.py](packaging/setup_macos.py)).
 
-To build locally on Windows:
+Each job runs `SpecDash --selftest` on the built bundle (serves every script, parses a spectrum, renders both PNGs),
+zips the result and attaches it to the GitHub Release. The workflow can also be started manually from the Actions tab;
+those runs only upload build artifacts.
+
+To build locally:
 
 ```bash
 uv sync --no-dev --group build
-uv run --no-sync pyinstaller packaging/specdash.spec --noconfirm   # output: dist/SpecDash/
+uv run --no-sync pyinstaller packaging/specdash.spec --noconfirm        # Windows -> dist/SpecDash/
+(cd packaging && uv run --no-sync python setup_macos.py py2app --dist-dir ../dist)   # macOS -> dist/SpecDash.app
 ```
-
-The spec in [packaging/](packaging/) drops Dash/Plotly files that are never used at runtime
-(source maps, test fixtures, offline plotly.js) to keep the bundle small.

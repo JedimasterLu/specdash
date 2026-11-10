@@ -1,0 +1,112 @@
+name: Build desktop apps
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed to attach files to a GitHub Release
+
+env:
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # Runtime dependencies + PyInstaller only; dev tools must not end up in the bundle.
+      - name: Install dependencies
+        run: uv sync --no-dev --group build
+
+      - name: Check tag matches package version
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $pkg = uv run --no-sync python -c "import specdash; print(specdash.__version__)"
+          if ("v$pkg" -ne $env:VERSION) {
+            throw "Tag $env:VERSION does not match specdash.__version__ ($pkg)."
+          }
+
+      - name: Build with PyInstaller
+        run: uv run --no-sync pyinstaller packaging/specdash.spec --noconfirm
+
+      - name: Self-test
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath ".\dist\SpecDash\SpecDash.exe" -ArgumentList "--selftest" -Wait -PassThru
+          $log = Join-Path $env:LOCALAPPDATA "SpecDash\specdash.log"
+          if (Test-Path $log) { Get-Content $log }
+          if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)." }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "SpecDash-$env:VERSION-windows-x64"
+          Compress-Archive -Path dist\SpecDash -DestinationPath "$name.zip" -CompressionLevel Optimal
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: SpecDash-${{ env.VERSION }}-windows-x64
+          path: SpecDash-*-windows-x64.zip
+
+  macos:
+    runs-on: macos-latest # Apple silicon
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install . py2app
+
+      - name: Check tag matches package version
+        if: github.ref_type == 'tag'
+        run: |
+          pkg=$(python -c "import specdash; print(specdash.__version__)")
+          [ "v$pkg" = "$VERSION" ] || { echo "Tag $VERSION does not match specdash.__version__ ($pkg)"; exit 1; }
+
+      - name: Build with py2app
+        run: |
+          python packaging/make_icns.py
+          # Run from packaging/: py2app rejects the install_requires that setuptools
+          # derives from the pyproject.toml in the repository root.
+          (cd packaging && python setup_macos.py py2app --dist-dir ../dist)
+          python packaging/postprocess_macos.py dist/SpecDash.app
+
+      - name: Verify code signature
+        run: codesign --verify --deep --strict --verbose=2 dist/SpecDash.app
+
+      - name: Self-test
+        run: dist/SpecDash.app/Contents/MacOS/SpecDash --selftest || { cat ~/Library/Logs/SpecDash/specdash.log 2>/dev/null; exit 1; }
+
+      - name: Package
+        run: ditto -c -k --sequesterRsrc --keepParent dist/SpecDash.app "SpecDash-$VERSION-macos-arm64.zip"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: SpecDash-${{ env.VERSION }}-macos-arm64
+          path: SpecDash-*-macos-arm64.zip
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: SpecDash-*.zip
+          generate_release_notes: true

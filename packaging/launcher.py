@@ -1,4 +1,4 @@
-"""PyInstaller entry point for the SpecDash executable."""
+"""Entry point for the frozen builds (PyInstaller on Windows, py2app on macOS)."""
 
 import sys
 import traceback

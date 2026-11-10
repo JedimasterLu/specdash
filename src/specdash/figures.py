@@ -8,6 +8,7 @@ import numpy as np
 import plotly.graph_objects as go
 from numpy.typing import NDArray
 
+from specdash.io import AndorSpectrum
 from specdash.processing import Result
 
 FloatArray = NDArray[np.float64]
@@ -119,9 +120,9 @@ def empty_figure(message: str) -> go.Figure:
 
 def _line(
     x: FloatArray, y: FloatArray, name: str, color: str, dash: str = "solid", hover_x: str = ".2f"
-) -> go.Scattergl:
-    """Create a thin line trace."""
-    return go.Scattergl(
+) -> go.Scatter:
+    """Create a thin line trace (SVG; a few thousand points need no WebGL)."""
+    return go.Scatter(
         x=x,
         y=y,
         name=name,
@@ -183,30 +184,6 @@ MAX_IMAGE_COLUMNS = 400
 ACCENT = "#2a78d6"
 
 
-def _downsample_columns(
-    wavelength: FloatArray, image: FloatArray, max_columns: int
-) -> tuple[FloatArray, FloatArray]:
-    """Block-average the spectral axis so the thumbnail stays light.
-
-    Args:
-        wavelength: Wavelength per pixel, shape ``(n_pixels,)``.
-        image: Intensities, shape ``(n_rows, n_pixels)``.
-        max_columns: Upper bound on the number of output columns.
-
-    Returns:
-        The reduced wavelength axis and image.
-    """
-    step = -(-wavelength.size // max_columns)
-    if step <= 1:
-        return wavelength, image
-    edges = np.arange(0, wavelength.size, step)
-    sizes = np.diff(np.append(edges, wavelength.size))
-    return (
-        np.add.reduceat(wavelength, edges) / sizes,
-        np.add.reduceat(image, edges, axis=1) / sizes,
-    )
-
-
 MIN_IMAGE_RATIO = 1 / 3
 """Flattest height / width the detector image is drawn with."""
 
@@ -232,8 +209,7 @@ def image_ratio(wavelength: FloatArray, n_rows: int) -> float:
 
 
 def rows_figure(
-    wavelength: FloatArray,
-    frames: FloatArray,
+    spectrum: AndorSpectrum,
     rows: tuple[int, int] | None,
     selectable: int | None = None,
 ) -> go.Figure:
@@ -244,27 +220,24 @@ def rows_figure(
     the number of selectable rows.
 
     Args:
-        wavelength: Wavelength per pixel, shape ``(n_pixels,)``.
-        frames: Raw counts, shape ``(n_pixels, n_rows)``.
+        spectrum: The spectrum whose detector image is shown.
         rows: Inclusive one-based row range, or ``None`` for all rows.
         selectable: Number of rows that may be selected, defaulting to all.
 
     Returns:
         The image figure.
     """
-    n_rows = frames.shape[1]
+    wavelength, n_rows = spectrum.wavelength, spectrum.n_rows
     first, last = rows or (1, n_rows)
-    image = frames.T
-    low, high = np.percentile(image, [1, 99])
-    x, z = _downsample_columns(wavelength, image, MAX_IMAGE_COLUMNS)
+    x, z, low, high = spectrum.display_image(MAX_IMAGE_COLUMNS)
 
     fig = go.Figure(
         go.Heatmap(
             x=x,
             y=np.arange(1, n_rows + 1),
             z=z,
-            zmin=float(low),
-            zmax=float(high) if high > low else float(low) + 1.0,
+            zmin=low,
+            zmax=high if high > low else low + 1.0,
             colorscale=[[0, "#000000"], [1, "#ffffff"]],
             showscale=False,
             hoverinfo="none",  # the readout is written next to the title by assets/rows_readout.js
