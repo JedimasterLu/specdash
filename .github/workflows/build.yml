@@ -1,11 +1,8 @@
 name: Build desktop apps
 
 on:
-  push:
-    tags: ["v*"]
-    # Temporary: build on every push to this branch, so it can be tested before merging to main
-    # (workflow_dispatch only works for workflows that already exist on the default branch).
-    branches: [pywebview]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:

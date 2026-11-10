@@ -1,6 +1,6 @@
 [project]
 name = "specdash"
-version = "0.2.0"
+version = "0.3.0"
 description = "Desktop app for interactive processing and visualization of Andor Solis .asc spectra."
 readme = "README.md"
 requires-python = ">=3.11"
