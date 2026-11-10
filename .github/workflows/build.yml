@@ -87,6 +87,9 @@ jobs:
           (cd packaging && python setup_macos.py py2app --dist-dir ../dist)
           python packaging/postprocess_macos.py dist/SpecDash.app
 
+      - name: Verify code signature
+        run: codesign --verify --deep --strict --verbose=2 dist/SpecDash.app
+
       - name: Self-test
         run: dist/SpecDash.app/Contents/MacOS/SpecDash --selftest || { cat ~/Library/Logs/SpecDash/specdash.log 2>/dev/null; exit 1; }
 

@@ -4,7 +4,8 @@ py2app copies whole packages, including tests, source maps, other platforms' lib
 the full 4.8 MB plotly.js (SpecDash serves its own slim copy). It also omits package
 metadata (``*.dist-info``), which some dependencies read at import time (plotly does).
 The python.org Python and several wheels (pyobjc, ...) are universal2; only arm64 is shipped,
-so the x86_64 halves are stripped with ``lipo`` and the binaries re-signed ad hoc.
+so the x86_64 halves are stripped with ``lipo``; the whole bundle is then re-signed ad hoc
+(required, or a downloaded app is reported as damaged).
 
 Run after the build; ``SpecDash --selftest`` afterwards verifies nothing needed was removed::
 
@@ -108,6 +109,18 @@ def thin_to_arm64(app: Path) -> None:
     print(f"Thinned {thinned} universal binaries to arm64")
 
 
+def sign_bundle(app: Path) -> None:
+    """Re-sign the whole bundle ad hoc and verify it.
+
+    Pruning and thinning change files after py2app, which invalidates the bundle's seal. A
+    downloaded (quarantined) app with an invalid signature is reported by Gatekeeper as
+    "damaged and can't be opened" instead of the usual "unidentified developer" prompt.
+    """
+    subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(app)], check=True)
+    subprocess.run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app)], check=True)
+    print("Signed bundle ad hoc and verified the signature")
+
+
 def main(app: str) -> None:
     libs = sorted(Path(app, "Contents", "Resources", "lib").glob("python3.*"))
     if not libs:
@@ -116,6 +129,7 @@ def main(app: str) -> None:
     add_metadata(libs[0])
     prune(libs[0])
     thin_to_arm64(Path(app))
+    sign_bundle(Path(app))
     print(f"{app}: {before / 1e6:.1f} MB -> {_size(Path(app)) / 1e6:.1f} MB")
 
 

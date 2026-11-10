@@ -10,7 +10,7 @@ No Python needed. Download from the [Releases](../../releases) page:
   (requires the Edge WebView2 runtime, preinstalled on current Windows). SmartScreen may warn about an unknown
   publisher because the exe is not code-signed: **More info → Run anyway**.
 - **macOS** (Apple silicon): `SpecDash-<version>-macos-arm64.zip`. Unzip and move `SpecDash.app` to Applications.
-  The app is not notarized; on first launch right-click → **Open** (or run `xattr -cr SpecDash.app`).
+  The app is not notarized; on first launch right-click → **Open**. If macOS says the app is "damaged", run `xattr -cr /Applications/SpecDash.app` once to remove the download quarantine flag, then open it again.
 
 Startup errors are written to `%LOCALAPPDATA%\SpecDash\specdash.log` (Windows) or `~/Library/Logs/SpecDash/specdash.log` (macOS).
 
