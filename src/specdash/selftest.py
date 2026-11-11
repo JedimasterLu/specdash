@@ -7,6 +7,7 @@ spectrum can be parsed and processed, and that matplotlib can render both PNG ex
 from __future__ import annotations
 
 import re
+import sys
 import traceback
 
 from specdash.io import parse_asc
@@ -47,6 +48,11 @@ def _check() -> None:
             raise RuntimeError("PNG export did not produce a PNG")
 
     import webview  # noqa: F401  (import only; opening a window needs a display)
+
+    if sys.platform == "win32":
+        # pywebview drives WinForms through pythonnet; loading the .NET runtime here catches a
+        # bundle that is missing Python.Runtime.dll or cannot start the CLR (needs no display).
+        import clr  # noqa: F401
 
 
 def run() -> int:

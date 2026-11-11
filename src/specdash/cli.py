@@ -35,6 +35,25 @@ def _attach_log() -> None:
     sys.stderr = sys.stderr or stream
 
 
+def _unblock_bundle() -> None:
+    """Strip Windows' "downloaded from the internet" mark from the bundled DLLs.
+
+    A zip downloaded in a browser and extracted with Explorer tags every file with a
+    ``Zone.Identifier`` stream. The .NET Framework then refuses to load ``Python.Runtime.dll``
+    (needed by pywebview through pythonnet), which surfaces as ``Failed to resolve
+    Python.Runtime.Loader.Initialize``. Removing the stream is what "Unblock" in the file
+    properties does.
+    """
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    for dll in root.rglob("*.dll"):
+        try:
+            os.remove(f"{dll}:Zone.Identifier")
+        except OSError:  # no mark, or a file system without streams
+            pass
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments.
 
@@ -61,6 +80,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         argv: Argument list; ``None`` uses ``sys.argv``.
     """
     _attach_log()  # before the heavy imports, some of which touch sys.stdout
+    _unblock_bundle()  # before pywebview loads pythonnet
     args = parse_args(argv)
     if args.selftest:
         from specdash import selftest
