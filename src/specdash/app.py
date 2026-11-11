@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import math
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from dash.exceptions import PreventUpdate
 from flask import request, send_file
 
 from specdash import __version__, desktop, mplexport, store
+from specdash.mplexport import LEGEND_LOCATIONS, PlotStyle
 from specdash.figures import GRAPH_CONFIG, empty_figure, image_ratio, inputs_figure, result_figure, rows_figure
 from specdash.io import AndorSpectrum
 from specdash.processing import (
@@ -100,6 +102,237 @@ def _mode_options() -> list[dict[str, Any]]:
     return [{"label": mode.label, "value": key} for key, mode in MODES.items()]
 
 
+# --------------------------------------------------------------------------- #
+# PNG export dialog
+# --------------------------------------------------------------------------- #
+
+PNG_OPT = "png-opt"
+"""``type`` of every control in the PNG dialog; ``name`` is the :class:`PlotStyle` field it edits."""
+
+_CHECKBOX_FIELDS = frozenset({"legend_frame", "grid", "box", "transparent"})
+_TEXT_FIELDS = frozenset({"font", "legend", "tick_direction", "x_label", "y_label"})
+_INT_FIELDS = frozenset({"dpi", "legend_cols"})
+_RANGES: dict[str, tuple[float, float]] = {
+    "width_cm": (1.0, 40.0),
+    "height_cm": (1.0, 40.0),
+    "line_width": (0.1, 6.0),
+    "axis_width": (0.1, 4.0),
+    "label_size": (3.0, 40.0),
+    "tick_size": (3.0, 40.0),
+    "legend_size": (3.0, 40.0),
+    "tick_length": (0.0, 20.0),
+    "dpi": (72, 1200),
+    "legend_cols": (1, 10),
+}
+
+
+def _opt_id(name: str) -> dict[str, str]:
+    return {"type": PNG_OPT, "name": name}
+
+
+def _number(name: str, step: float, **extra: Any) -> dcc.Input:
+    """Numeric input of a :class:`PlotStyle` field (sends its value 0.3 s after the last edit)."""
+    low, high = _RANGES.get(name, (None, None))
+    return dcc.Input(
+        id=_opt_id(name),
+        type="number",
+        value=getattr(PlotStyle(), name),
+        min=low,
+        max=high,
+        step=step,
+        debounce=0.3,
+        className="png-input",
+        **extra,
+    )
+
+
+def _only(base: str, curves_only: bool) -> str:
+    """Add the class that hides a control while the dialog edits the detector image (see style.css)."""
+    return f"{base} png-curves-only" if curves_only else base
+
+
+def _check(name: str, label: str, curves_only: bool = False) -> dcc.Checklist:
+    return dcc.Checklist(
+        id=_opt_id(name),
+        options=[{"label": label, "value": "on"}],
+        value=["on"] if getattr(PlotStyle(), name) else [],
+        className=_only("checks", curves_only),
+        labelClassName="check",
+    )
+
+
+def _field(label: str, control: Any, curves_only: bool = False) -> html.Div:
+    return html.Div(
+        className=_only("png-field", curves_only), children=[html.Label(label, className="png-label"), control]
+    )
+
+
+def _group(title: str, *children: Any, curves_only: bool = False) -> html.Div:
+    return html.Div(
+        className=_only("png-group", curves_only),
+        children=[html.H3(title), html.Div(className="png-grid", children=list(children))],
+    )
+
+
+def _png_dialog() -> html.Div:
+    """Build the (initially hidden) PNG export dialog: parameters on the left, live preview on the right."""
+    defaults = PlotStyle()
+    controls = html.Div(
+        className="png-controls",
+        children=[
+            _group(
+                "Size",
+                _field("Width (cm)", _number("width_cm", 0.1)),
+                _field("Height (cm)", _number("height_cm", 0.1), curves_only=True),
+            ),
+            _group(
+                "Lines",
+                _field("Line width (pt)", _number("line_width", 0.1)),
+                _field("Axes width (pt)", _number("axis_width", 0.1)),
+            ),
+            _group(
+                "Font",
+                html.Div(
+                    className="png-wide",
+                    children=_field(
+                        "Family",
+                        dcc.Dropdown(
+                            id=_opt_id("font"),
+                            options=[{"label": "Auto (Arial)", "value": "auto"}],
+                            value=defaults.font,
+                            clearable=False,
+                            searchable=False,
+                        ),
+                    ),
+                ),
+                _field("Axis labels (pt)", _number("label_size", 0.5)),
+                _field("Tick labels (pt)", _number("tick_size", 0.5)),
+                _field("Legend (pt)", _number("legend_size", 0.5), curves_only=True),
+            ),
+            _group(
+                "Legend",
+                html.Div(
+                    className="png-wide",
+                    children=_field(
+                        "Position",
+                        dcc.Dropdown(
+                            id=_opt_id("legend"),
+                            options=[{"label": label, "value": key} for key, label in LEGEND_LOCATIONS.items()],
+                            value=defaults.legend,
+                            clearable=False,
+                            searchable=False,
+                        ),
+                    ),
+                ),
+                _field("Columns", _number("legend_cols", 1)),
+                html.Div(className="png-wide", children=_check("legend_frame", "Frame")),
+            
+                curves_only=True,
+            ),
+            _group(
+                "Axes",
+                _field(
+                    "Ticks",
+                    dcc.RadioItems(
+                        id=_opt_id("tick_direction"),
+                        options=[{"label": "In", "value": "in"}, {"label": "Out", "value": "out"}],
+                        value=defaults.tick_direction,
+                        className="pills pills-compact png-pills",
+                        inputClassName="pill-input",
+                        labelClassName="pill",
+                    ),
+                ),
+                _field("Tick length (pt)", _number("tick_length", 0.5)),
+                html.Div(className="png-wide png-checks", children=[_check("box", "Box (top and right lines)"), _check("grid", "Grid", curves_only=True)]),
+            ),
+            _group(
+                "Range",
+                _field("X min", _number("x_min", "any", placeholder="auto")),
+                _field("X max", _number("x_max", "any", placeholder="auto")),
+                _field("Y min", _number("y_min", "any", placeholder="auto")),
+                _field("Y max", _number("y_max", "any", placeholder="auto")),
+                curves_only=True,
+            ),
+            _group(
+                "Labels",
+                html.Div(
+                    className="png-wide",
+                    children=_field(
+                        "X label",
+                        dcc.Input(id=_opt_id("x_label"), type="text", value="", placeholder="auto", debounce=0.4, className="png-input"),
+                    ),
+                ),
+                html.Div(
+                    className="png-wide",
+                    children=_field(
+                        "Y label",
+                        dcc.Input(id=_opt_id("y_label"), type="text", value="", placeholder="auto", debounce=0.4, className="png-input"),
+                    ),
+                ),
+            ),
+            _group(
+                "Output",
+                _field(
+                    "Resolution",
+                    dcc.Dropdown(
+                        id=_opt_id("dpi"),
+                        options=[{"label": f"{dpi} dpi", "value": dpi} for dpi in (150, 300, 600, 1200)],
+                        value=defaults.dpi,
+                        clearable=False,
+                        searchable=False,
+                    ),
+                ),
+                html.Div(className="png-wide", children=_check("transparent", "Transparent background")),
+            ),
+        ],
+    )
+    preview = html.Div(
+        className="png-preview",
+        children=[
+            html.Div(className="png-canvas", children=html.Img(id="png-preview-img", alt="Preview")),
+            html.Div(id="png-preview-info", className="muted small png-info"),
+        ],
+    )
+    return html.Div(
+        id="png-modal",
+        className="modal",
+        children=[
+            dcc.Store(id="png-last-target"),
+            html.Div(id="png-backdrop", className="modal-backdrop", n_clicks=0),
+            html.Div(
+                className="modal-card",
+                role="dialog",
+                children=[
+                    html.Div(
+                        className="modal-head",
+                        children=[
+                            html.H2(
+                                [
+                                    html.Span("Export PNG", className="png-title-main"),
+                                    html.Span(" · Result", className="png-title-result"),
+                                    html.Span(" · Raw inputs", className="png-title-inputs"),
+                                    html.Span(" · Detector rows", className="png-title-rows"),
+                                ],
+                                className="inline",
+                            ),
+                            html.Button("Reset", id="png-reset", className="btn-link", n_clicks=0),
+                        ],
+                    ),
+                    html.Div(className="modal-body", children=[controls, preview]),
+                    html.Div(
+                        className="modal-foot",
+                        children=[
+                            html.Button("Cancel", id="png-cancel", className="btn", n_clicks=0),
+                            html.Button("Save PNG…", id="png-save", className="btn btn-primary", n_clicks=0),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    )
+
+
+
 def build_layout() -> html.Div:
     """Build the application layout.
 
@@ -169,7 +402,6 @@ def build_layout() -> html.Div:
                     ),
                     html.Div(id="rows-label", className="muted small"),
                     dcc.Store(id="rows", data=None),
-                    dcc.Store(id="rows-png-done"),
                 ],
             ),
             html.Section(
@@ -266,7 +498,13 @@ def build_layout() -> html.Div:
             html.Section(
                 className="card card-plot",
                 children=[
-                    html.H2("Raw inputs"),
+                    html.Div(
+                        className="card-head",
+                        children=[
+                            html.H2("Raw inputs", className="inline"),
+                            html.Button("Save PNG", id="inputs-png", className="btn-link", n_clicks=0),
+                        ],
+                    ),
                     dcc.Graph(id="inputs-graph", config=GRAPH_CONFIG, style={"height": "320px"}),
                 ],
             ),
@@ -303,6 +541,7 @@ def build_layout() -> html.Div:
                 ],
             ),
             html.Div(className="layout", children=[sidebar, main]),
+            _png_dialog(),
             # Files loaded by Python (drop / browse) are announced here; see desktop.ingest.
             dcc.Store(id="dropped", data=None),
         ],
@@ -312,6 +551,38 @@ def build_layout() -> html.Div:
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+
+def _style_from_form(names: list[str], values: list[Any]) -> PlotStyle:
+    """Build a :class:`PlotStyle` from the PNG dialog controls, falling back to defaults for bad input."""
+    defaults = PlotStyle()
+    kwargs: dict[str, Any] = {}
+    for name, value in zip(names, values, strict=True):
+        default = getattr(defaults, name)
+        if name in _CHECKBOX_FIELDS:
+            kwargs[name] = bool(value)
+        elif name in _TEXT_FIELDS:
+            kwargs[name] = str(value) if value is not None else default
+        elif default is None:  # optional limit: empty means automatic
+            kwargs[name] = float(value) if isinstance(value, (int, float)) else None
+        else:
+            low, high = _RANGES[name]
+            number = float(value) if isinstance(value, (int, float)) else float(default)
+            number = min(max(number, low), high)
+            kwargs[name] = int(round(number)) if name in _INT_FIELDS else number
+    if kwargs.get("legend") not in LEGEND_LOCATIONS:
+        kwargs["legend"] = defaults.legend
+    if kwargs.get("tick_direction") not in ("in", "out"):
+        kwargs["tick_direction"] = defaults.tick_direction
+    return PlotStyle(**kwargs)
+
+
+def _form_default(name: str) -> Any:
+    """Control value of a :class:`PlotStyle` default."""
+    value = getattr(PlotStyle(), name)
+    if name in _CHECKBOX_FIELDS:
+        return ["on"] if value else []
+    return value
 
 
 def _load(items: StoreData | None) -> list[AndorSpectrum]:
@@ -642,9 +913,7 @@ def register_callbacks(app: Dash) -> None:
         alerts = [html.Div(w, className="alert") for w in result.warnings]
         return result_figure(result, order), inputs_figure(result, order), result.formula, alerts, meta
 
-    @app.callback(
-        Output("export-format", "value"),
-        Input("export-format", "value"),
+    process_states = [
         State("mode", "value"),
         State("quantity", "value"),
         State("normalize", "value"),
@@ -654,10 +923,9 @@ def register_callbacks(app: Dash) -> None:
         State("excitation", "value"),
         State("wl-range", "value"),
         *[State(f"store-{role}", "data") for role in Role],
-        prevent_initial_call=True,
-    )
-    def export(
-        fmt: str | None,
+    ]
+
+    def run_current(
         mode_key: str,
         quantity: str | None,
         normalize: list[str] | None,
@@ -666,46 +934,191 @@ def register_callbacks(app: Dash) -> None:
         x_axis: str | None,
         excitation: float | None,
         wl_range: list[float] | None,
-        *stores: StoreData | None,
-    ) -> None:
-        if fmt not in EXPORT_FORMATS:
-            raise PreventUpdate
+        stores: tuple[StoreData | None, ...],
+    ) -> tuple[Mode, list[AndorSpectrum], Result] | None:
+        """Process the current UI state, or return ``None`` when there is nothing to export."""
         store_map = dict(zip(Role, stores, strict=True))
         if not store_map[Role.SIGNAL]:
             return None
         options = _build_options(normalize, rows, smooth, x_axis, excitation, quantity, wl_range)
         try:
-            mode, signals, result = _run(mode_key, store_map, options)
+            return _run(mode_key, store_map, options)
         except ValueError:
             return None
-        if fmt == "png":
-            content = mplexport.result_png(result, [s.name for s in signals])
-        else:
-            content = export_bytes(result, mode, fmt)
-        stem = Path(signals[0].name).stem
-        quantity_key = mode.quantity(quantity).key
-        desktop.save_bytes(f"{stem}_{mode.key}_{quantity_key}.{fmt}", content)
-        return None
+
+    # The PNG dialog is opened by the Export menu (Result), and by the Save PNG buttons of the Raw inputs
+    # and Detector rows cards. Its target is kept in the dialog's class ("modal open target-<name>").
+    reset_on_target_change = ["x_label", "y_label", "x_min", "x_max", "y_min", "y_max"]
 
     @app.callback(
-        Output("rows-png-done", "data"),
+        Output("export-format", "value"),
+        Output("png-modal", "className"),
+        Output("png-last-target", "data"),
+        Output({"type": PNG_OPT, "name": ALL}, "value", allow_duplicate=True),
+        Input("export-format", "value"),
+        Input("inputs-png", "n_clicks"),
         Input("rows-png", "n_clicks"),
-        State(f"store-{Role.SIGNAL}", "data"),
-        State("rows", "data"),
-        State("rows-signal", "value"),
+        State("png-last-target", "data"),
+        State({"type": PNG_OPT, "name": ALL}, "id"),
+        State({"type": PNG_OPT, "name": ALL}, "value"),
+        *process_states,
         prevent_initial_call=True,
     )
-    def export_rows_png(
-        _clicks: int, signals: StoreData | None, rows: RowsData | None, index: int | None
-    ) -> Any:
-        if not signals:
+    def open_or_export(
+        fmt: str | None,
+        _inputs_clicks: int | None,
+        _rows_clicks: int | None,
+        last_target: str | None,
+        ids: list[dict[str, str]],
+        values: list[Any],
+        *state: Any,
+    ) -> tuple[None, Any, Any, Any]:
+        trigger = ctx.triggered_id
+        keep = (None, no_update, no_update, [no_update] * len(ids))
+        if trigger == "export-format":
+            if fmt not in EXPORT_FORMATS:
+                raise PreventUpdate
+            target = "result" if fmt == "png" else None
+        elif not ctx.triggered or not ctx.triggered[0]["value"]:
             raise PreventUpdate
-        spectrum = _load([signals[index if index is not None and index < len(signals) else 0]])[0]
-        content = mplexport.rows_png(
-            spectrum.wavelength, spectrum.frames, (rows["first"], rows["last"]) if rows else None
-        )
-        desktop.save_bytes(f"{Path(spectrum.name).stem}_rows.png", content)
-        return no_update
+        else:
+            target = "inputs" if trigger == "inputs-png" else "rows"
+        args, stores = state[:8], state[8:12]
+
+        if target == "rows":
+            if not stores[0]:
+                return keep
+        else:
+            current = run_current(*args, tuple(stores))
+            if current is None:
+                return keep
+            mode, signals, result = current
+            if target is None:  # a data format: save straight away
+                quantity_key = mode.quantity(args[1]).key
+                desktop.save_bytes(
+                    f"{Path(signals[0].name).stem}_{mode.key}_{quantity_key}.{fmt}", export_bytes(result, mode, fmt)
+                )
+                return keep
+        # Labels and ranges belong to one figure; do not carry them over to another.
+        fresh = target != last_target
+        updated = [
+            _form_default(i["name"]) if fresh and i["name"] in reset_on_target_change else no_update for i in ids
+        ]
+        return None, f"modal open target-{target}", target, updated
+
+    def dialog_target(css: str) -> str | None:
+        """Target of an open dialog, or ``None`` while it is closed."""
+        classes = css.split()
+        if "open" not in classes:
+            return None
+        return next((c.removeprefix("target-") for c in classes if c.startswith("target-")), "result")
+
+    @app.callback(
+        Output("png-modal", "className", allow_duplicate=True),
+        Input("png-cancel", "n_clicks"),
+        Input("png-backdrop", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def close_png_dialog(*_clicks: int | None) -> str:
+        if not ctx.triggered or not ctx.triggered[0]["value"]:
+            raise PreventUpdate
+        return "modal"
+
+    @app.callback(
+        Output({"type": PNG_OPT, "name": "font"}, "options"),
+        Input("png-modal", "className"),
+        State({"type": PNG_OPT, "name": "font"}, "options"),
+    )
+    def load_fonts(css: str, current: list[dict[str, str]]) -> list[dict[str, str]]:
+        """List the installed fonts the first time the dialog opens (importing matplotlib is slow)."""
+        if dialog_target(css) is None or len(current) > 1:
+            raise PreventUpdate
+        installed = mplexport.available_fonts()
+        auto = {"label": "Auto (Arial)", "value": "auto"}
+        return [auto, *({"label": family, "value": family} for family in installed)]
+
+    @app.callback(
+        Output({"type": PNG_OPT, "name": ALL}, "value"),
+        Input("png-reset", "n_clicks"),
+        State({"type": PNG_OPT, "name": ALL}, "id"),
+        prevent_initial_call=True,
+    )
+    def reset_png_options(clicks: int | None, ids: list[dict[str, str]]) -> list[Any]:
+        if not clicks:
+            raise PreventUpdate
+        return [_form_default(i["name"]) for i in ids]
+
+    def render_png(target: str, style: PlotStyle, state: tuple[Any, ...], dpi: int | None) -> tuple[bytes, str] | None:
+        """Draw the dialog's figure; returns the PNG and a suggested file name, or ``None`` without data."""
+        args, stores, rows_index = state[:8], state[8:12], state[12]
+        if target == "rows":
+            signals = stores[0]
+            if not signals:
+                return None
+            spectrum = _load([signals[rows_index if rows_index is not None and rows_index < len(signals) else 0]])[0]
+            rows = args[3]
+            content = mplexport.rows_png(
+                spectrum.wavelength,
+                spectrum.frames,
+                (rows["first"], rows["last"]) if rows else None,
+                style,
+                dpi,
+            )
+            return content, f"{Path(spectrum.name).stem}_rows.png"
+        current = run_current(*args, tuple(stores))
+        if current is None:
+            return None
+        mode, signals, result = current
+        order = [s.name for s in signals]
+        stem = Path(signals[0].name).stem
+        if target == "inputs":
+            return mplexport.inputs_png(result, order, style, dpi), f"{stem}_{mode.key}_inputs.png"
+        return mplexport.result_png(result, order, style, dpi), f"{stem}_{mode.key}_{mode.quantity(args[1]).key}.png"
+
+    dialog_states = [*process_states, State("rows-signal", "value")]
+
+    @app.callback(
+        Output("png-preview-img", "src"),
+        Output("png-preview-info", "children"),
+        Input("png-modal", "className"),
+        Input({"type": PNG_OPT, "name": ALL}, "value"),
+        State({"type": PNG_OPT, "name": ALL}, "id"),
+        *dialog_states,
+        prevent_initial_call=True,
+    )
+    def update_png_preview(css: str, values: list[Any], ids: list[dict[str, str]], *state: Any) -> tuple[Any, Any]:
+        target = dialog_target(css)
+        if target is None:
+            raise PreventUpdate
+        style = _style_from_form([i["name"] for i in ids], values)
+        rendered = render_png(target, style, state, mplexport.preview_dpi(style))
+        if rendered is None:
+            return no_update, "Nothing to export."
+        content = rendered[0]
+        scale = style.dpi / mplexport.preview_dpi(style)
+        width, height = (round(side * scale) for side in mplexport.png_size(content))
+        info = f"Axes {style.width_cm:g} cm wide · saved as {width} × {height} px at {style.dpi} dpi"
+        return "data:image/png;base64," + base64.b64encode(content).decode(), info
+
+    @app.callback(
+        Output("png-modal", "className", allow_duplicate=True),
+        Input("png-save", "n_clicks"),
+        State("png-modal", "className"),
+        State({"type": PNG_OPT, "name": ALL}, "value"),
+        State({"type": PNG_OPT, "name": ALL}, "id"),
+        *dialog_states,
+        prevent_initial_call=True,
+    )
+    def save_png(clicks: int | None, css: str, values: list[Any], ids: list[dict[str, str]], *state: Any) -> Any:
+        target = dialog_target(css)
+        if not clicks or target is None:
+            raise PreventUpdate
+        style = _style_from_form([i["name"] for i in ids], values)
+        rendered = render_png(target, style, state, None)
+        if rendered is None:
+            raise PreventUpdate
+        content, name = rendered
+        return "modal" if desktop.save_bytes(name, content) else no_update  # stay open when the dialog was cancelled
 
 
 PLOTLY_URL = "/_dash-component-suites/plotly/package_data/plotly.min.js"

@@ -1,7 +1,7 @@
 """Headless sanity check of an installed or bundled build (``specdash --selftest``).
 
 Verifies that the Dash app builds and serves every script it references, that a
-spectrum can be parsed and processed, and that matplotlib can render both PNG exports.
+spectrum can be parsed and processed, and that matplotlib can render both PNG exports (including a customized style, as the export dialog does).
 """
 
 from __future__ import annotations
@@ -42,7 +42,18 @@ def _check() -> None:
     rows_figure(spectrum, (1, 2), spectrum.n_rows)
     for png in (
         mplexport.result_png(result, [spectrum.name]),
+        mplexport.preview_png(
+            result, [spectrum.name], mplexport.PlotStyle(font="Times New Roman", legend="best", x_min=410, grid=True)
+        ),
+        mplexport.inputs_png(result, [spectrum.name], mplexport.PlotStyle(legend="off", line_width=1.5)),
+        *(
+            mplexport.result_png(result, [spectrum.name], mplexport.PlotStyle(legend=where, legend_cols=2))
+            for where in ("outside right", "outside top", "outside bottom")
+        ),
         mplexport.rows_png(spectrum.wavelength, spectrum.frames, (1, 2)),
+        mplexport.rows_png(
+            spectrum.wavelength, spectrum.frames, (1, 2), mplexport.PlotStyle(width_cm=6, box=False, tick_direction="out")
+        ),
     ):
         if not png.startswith(b"\x89PNG"):
             raise RuntimeError("PNG export did not produce a PNG")
