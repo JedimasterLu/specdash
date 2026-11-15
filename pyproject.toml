@@ -24,8 +24,7 @@ packages = ["src/specdash"]
 
 [dependency-groups]
 build = [
-    "pyinstaller>=6.10; sys_platform == 'win32'",
-    "py2app>=0.28; sys_platform == 'darwin'",
+    "pyinstaller>=6.10",
 ]
 dev = [
     "ipykernel>=7.2.0",

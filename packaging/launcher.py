@@ -1,4 +1,4 @@
-"""Entry point for the frozen builds (PyInstaller on Windows, py2app on macOS)."""
+"""Entry point for the frozen builds (PyInstaller on Windows and macOS)."""
 
 import sys
 import traceback
