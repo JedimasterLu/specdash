@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import base64
 import math
+import re
+import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -12,8 +15,16 @@ from dash.exceptions import PreventUpdate
 from flask import request, send_file
 
 from specdash import __version__, desktop, mplexport, store
-from specdash.mplexport import LEGEND_LOCATIONS, PlotStyle
-from specdash.figures import GRAPH_CONFIG, empty_figure, image_ratio, inputs_figure, result_figure, rows_figure
+from specdash.mplexport import LEGEND_LOCATIONS, LINE_STYLES, CurveStyle, PlotStyle
+from specdash.figures import (
+    GRAPH_CONFIG,
+    SERIES_COLORS,
+    empty_figure,
+    image_ratio,
+    inputs_figure,
+    result_figure,
+    rows_figure,
+)
 from specdash.io import AndorSpectrum
 from specdash.processing import (
     MODES,
@@ -27,6 +38,7 @@ from specdash.processing import (
     XAxis,
     export_bytes,
     process,
+    process_intervals,
 )
 
 ASSETS_DIR = Path(__file__).parent / "assets"
@@ -40,7 +52,12 @@ ROLE_HINTS: dict[Role, str] = {
 }
 
 StoreData = list[dict[str, Any]]
-RowsData = dict[str, int]
+RowsData = dict[str, Any]
+"""Value of the ``rows`` store: ``{"count": n_rows, "ranges": [[first, last], ...], "active": index}``,
+the ranges being inclusive and one-based; the active one is what dragging on the detector image edits."""
+
+MAX_INTERVALS = len(SERIES_COLORS)
+"""Most detector row intervals at once; each has its own color."""
 
 ROWS_GRAPH_DEFAULT_STYLE = {"height": "72px"}
 ROWS_PLOT_CHROME_PX = 52
@@ -115,7 +132,8 @@ _INT_FIELDS = frozenset({"dpi", "legend_cols"})
 _RANGES: dict[str, tuple[float, float]] = {
     "width_cm": (1.0, 40.0),
     "height_cm": (1.0, 40.0),
-    "line_width": (0.1, 6.0),
+    "line_width": (0.1, 2.0),
+    "line_alpha": (0.0, 1.0),
     "axis_width": (0.1, 4.0),
     "label_size": (3.0, 40.0),
     "tick_size": (3.0, 40.0),
@@ -128,6 +146,66 @@ _RANGES: dict[str, tuple[float, float]] = {
 
 def _opt_id(name: str) -> dict[str, str]:
     return {"type": PNG_OPT, "name": name}
+
+
+CURVE_OPT = "png-curve"
+"""``type`` of the per-curve controls (color, line style); ``label`` is the curve, ``field`` the property."""
+
+CURVE_PATTERN = {"type": CURVE_OPT, "label": ALL, "field": ALL}
+_HEX_COLOR = re.compile(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})")
+
+
+def _curve_id(label: str, field: str) -> dict[str, str]:
+    return {"type": CURVE_OPT, "label": label, "field": field}
+
+
+def _curve_row(label: str, color: str, linestyle: str) -> html.Div:
+    """Controls of one curve: color (a picker is attached by ``assets/png_dialog.js``) and line style."""
+    return html.Div(
+        className="png-curve",
+        children=[
+            html.Div(label, className="png-curve-name", title=label),
+            html.Div(
+                className="png-curve-grid",
+                children=[
+                    html.Div(
+                        className="png-color",
+                        children=dcc.Input(
+                            id=_curve_id(label, "color"),
+                            type="text",
+                            value=color,
+                            maxLength=7,
+                            debounce=0.3,
+                            className="png-input",
+                        ),
+                    ),
+                    dcc.Dropdown(
+                        id=_curve_id(label, "linestyle"),
+                        options=[{"label": name, "value": key} for key, name in LINE_STYLES.items()],
+                        value=linestyle,
+                        clearable=False,
+                        searchable=False,
+                    ),
+                ],
+            ),
+        ],
+    )
+
+
+def _curve_styles(ids: list[dict[str, str]], values: list[Any]) -> dict[str, CurveStyle]:
+    """Collect the per-curve controls into overrides; invalid or empty entries keep the default."""
+    fields: dict[str, dict[str, Any]] = {}
+    for control, value in zip(ids, values, strict=True):
+        fields.setdefault(control["label"], {})[control["field"]] = value
+    styles: dict[str, CurveStyle] = {}
+    for label, own in fields.items():
+        color = own.get("color")
+        linestyle = own.get("linestyle")
+        styles[label] = CurveStyle(
+            color=color.strip() if isinstance(color, str) and _HEX_COLOR.fullmatch(color.strip()) else None,
+            linestyle=linestyle if linestyle in LINE_STYLES else None,
+        )
+    return styles
 
 
 def _number(name: str, step: float, **extra: Any) -> dcc.Input:
@@ -143,6 +221,20 @@ def _number(name: str, step: float, **extra: Any) -> dcc.Input:
         debounce=0.3,
         className="png-input",
         **extra,
+    )
+
+
+def _slider(name: str, step: float, ticks: tuple[float, ...]) -> dcc.Slider:
+    """Slider of a :class:`PlotStyle` field, with the value box dash puts beside it; sent on release."""
+    low, high = _RANGES[name]
+    return dcc.Slider(
+        id=_opt_id(name),
+        min=low,
+        max=high,
+        step=step,
+        value=getattr(PlotStyle(), name),
+        marks={tick: f"{tick:g}" for tick in ticks},
+        updatemode="mouseup",
     )
 
 
@@ -186,9 +278,13 @@ def _png_dialog() -> html.Div:
                 _field("Height (cm)", _number("height_cm", 0.1), curves_only=True),
             ),
             _group(
-                "Lines",
-                _field("Line width (pt)", _number("line_width", 0.1)),
-                _field("Axes width (pt)", _number("axis_width", 0.1)),
+                "Curves",
+                html.Div(className="png-wide", children=_field("Line width (pt)", _slider("line_width", 0.1, (0.1, 0.5, 1.0, 1.5, 2.0)))),
+                html.Div(
+                    className="png-wide png-curves-only",
+                    children=_field("Line opacity", _slider("line_alpha", 0.1, (0.0, 0.2, 0.4, 0.6, 0.8, 1.0))),
+                ),
+                html.Div(id="png-curve-rows", className="png-wide png-curves-only"),
             ),
             _group(
                 "Font",
@@ -243,6 +339,7 @@ def _png_dialog() -> html.Div:
                     ),
                 ),
                 _field("Tick length (pt)", _number("tick_length", 0.5)),
+                _field("Axes width (pt)", _number("axis_width", 0.1)),
                 html.Div(className="png-wide png-checks", children=[_check("box", "Box (top and right lines)"), _check("grid", "Grid", curves_only=True)]),
             ),
             _group(
@@ -298,6 +395,7 @@ def _png_dialog() -> html.Div:
         className="modal",
         children=[
             dcc.Store(id="png-last-target"),
+            dcc.Store(id="png-curve-sig"),
             html.Div(id="png-backdrop", className="modal-backdrop", n_clicks=0),
             html.Div(
                 className="modal-card",
@@ -400,8 +498,12 @@ def build_layout() -> html.Div:
                             style=ROWS_GRAPH_DEFAULT_STYLE,
                         ),
                     ),
-                    html.Div(id="rows-label", className="muted small"),
+                    html.Div(id="rows-intervals", className="intervals"),
+                    html.Button(
+                        "+ Add interval", id="rows-add", className="btn-link rows-add", n_clicks=0, style={"display": "none"}
+                    ),
                     dcc.Store(id="rows", data=None),
+                    dcc.Store(id="rows-intervals-sig", data=None),
                 ],
             ),
             html.Section(
@@ -577,6 +679,13 @@ def _style_from_form(names: list[str], values: list[Any]) -> PlotStyle:
     return PlotStyle(**kwargs)
 
 
+def _full_style(
+    names: list[str], values: list[Any], curve_ids: list[dict[str, str]], curve_values: list[Any]
+) -> PlotStyle:
+    """Build the export style from the general and the per-curve controls."""
+    return replace(_style_from_form(names, values), curves=_curve_styles(curve_ids, curve_values))
+
+
 def _form_default(name: str) -> Any:
     """Control value of a :class:`PlotStyle` default."""
     value = getattr(PlotStyle(), name)
@@ -590,6 +699,16 @@ def _load(items: StoreData | None) -> list[AndorSpectrum]:
     return store.get(items)
 
 
+def _full_rows(count: int) -> RowsData:
+    """One interval covering all ``count`` detector rows."""
+    return {"count": count, "ranges": [[1, count]], "active": 0}
+
+
+def _intervals(rows: RowsData | None) -> list[tuple[int, int]]:
+    """The selected one-based row intervals; empty without a selection."""
+    return [(int(first), int(last)) for first, last in (rows or {}).get("ranges", [])]
+
+
 def _build_options(
     normalize: list[str] | None,
     rows: RowsData | None,
@@ -599,10 +718,14 @@ def _build_options(
     quantity: str | None,
     wl_range: list[float] | None = None,
 ) -> Options:
-    """Assemble processing options from raw UI values."""
+    """Assemble processing options from raw UI values.
+
+    With several row intervals ``rows`` stays unset here: :func:`process_intervals` applies each interval.
+    """
+    intervals = _intervals(rows)
     normalize = normalize or []
     return Options(
-        rows=(rows["first"] - 1, rows["last"] - 1) if rows else None,
+        rows=(intervals[0][0] - 1, intervals[0][1] - 1) if len(intervals) == 1 else None,
         per_second="second" in normalize,
         per_accumulation="accumulation" in normalize,
         divide_max="max" in normalize,
@@ -618,15 +741,59 @@ def _run(
     mode_key: str,
     stores: dict[Role, StoreData | None],
     options: Options,
+    intervals: list[tuple[int, int]],
+    signal_index: int | None,
 ) -> tuple[Mode, list[AndorSpectrum], Result]:
-    """Load spectra from stores and process them."""
+    """Load spectra from stores and process them.
+
+    With one row interval every signal is processed together. With several, only the signal
+    picked in the Detector rows card is, once per interval.
+    """
     mode = MODES[mode_key]
     signals = _load(stores[Role.SIGNAL])
     backgrounds: dict[Role, AndorSpectrum | None] = {}
     for role in mode.roles[1:]:
         loaded = _load(stores.get(role))
         backgrounds[role] = loaded[0] if loaded else None
+    if len(intervals) > 1:
+        picked = signal_index if signal_index is not None and signal_index < len(signals) else 0
+        signals = signals[picked : picked + 1]
+        return mode, signals, process_intervals(mode, signals[0], backgrounds, options, intervals)
     return mode, signals, process(mode, signals, backgrounds, options)
+
+
+def _interval_row(index: int, first: int, last: int, count: int, removable: bool) -> html.Div:
+    """Controls of one row interval: its color (as drawn on the image and in the plots), a slider and a remove button."""
+    color = SERIES_COLORS[index % len(SERIES_COLORS)]
+    return html.Div(
+        className="interval",
+        children=[
+            html.Div(
+                className="interval-head",
+                children=[
+                    html.Span(className="interval-dot", style={"background": color}),
+                    html.Span(f"Interval {index + 1}", className="interval-name"),
+                    html.Button(
+                        "×",
+                        id={"type": "rows-del", "index": index},
+                        className="chip-x",
+                        n_clicks=0,
+                        title="Remove interval",
+                    )
+                    if removable
+                    else None,
+                ],
+            ),
+            dcc.RangeSlider(
+                id={"type": "rows-range", "index": index},
+                min=1,
+                max=count,
+                step=1,
+                value=[first, last],
+                allowCross=False,
+            ),
+        ],
+    )
 
 
 def _rows_cell(spectrum: AndorSpectrum) -> str:
@@ -822,9 +989,95 @@ def register_callbacks(app: Dash) -> None:
         if not counts:
             return None
         count = min(counts)
-        if ctx.triggered_id == "rows-reset" or not current or current["count"] != count:
-            return {"first": 1, "last": count, "count": count}
+        if not current or current["count"] != count:
+            return _full_rows(count)
+        if ctx.triggered_id == "rows-reset":  # "All rows" resets the selected interval only
+            ranges = [list(r) for r in current["ranges"]]
+            active = min(int(current.get("active", 0)), len(ranges) - 1)
+            ranges[active] = [1, count]
+            return {"count": count, "ranges": ranges, "active": active}
         return current
+
+    @app.callback(
+        Output("rows-intervals", "children"),
+        Output("rows-intervals-sig", "data"),
+        Output("rows-add", "style"),
+        Output("rows-add", "disabled"),
+        Input("rows", "data"),
+        State("rows-intervals-sig", "data"),
+    )
+    def render_intervals(rows: RowsData | None, last: list[int] | None) -> tuple[Any, Any, Any, bool]:
+        """Build one slider per interval; sliders are kept (not rebuilt) while only their values change."""
+        if not rows or rows["count"] <= 1:
+            return [], None, {"display": "none"}, True
+        signature = [rows["count"], len(rows["ranges"])]
+        if signature == last:
+            raise PreventUpdate
+        ranges = rows["ranges"]
+        children: list[Any] = [
+            _interval_row(i, first, last_, rows["count"], removable=len(ranges) > 1)
+            for i, (first, last_) in enumerate(ranges)
+        ]
+        return children, signature, {"display": "inline-block"}, len(ranges) >= MAX_INTERVALS
+
+    @app.callback(
+        Output({"type": "rows-range", "index": ALL}, "value"),
+        Input("rows", "data"),
+        State({"type": "rows-range", "index": ALL}, "value"),
+        prevent_initial_call=True,
+    )
+    def sync_sliders(rows: RowsData | None, current: list[list[int]]) -> list[Any]:
+        """Move the sliders when the intervals were changed on the image."""
+        ranges = (rows or {}).get("ranges", [])
+        if len(current) != len(ranges):
+            raise PreventUpdate  # the sliders are being rebuilt with the right values
+        out = [no_update if list(now) == list(want) else list(want) for now, want in zip(current, ranges, strict=True)]
+        if all(value is no_update for value in out):
+            raise PreventUpdate
+        return out
+
+    @app.callback(
+        Output("rows", "data", allow_duplicate=True),
+        Input({"type": "rows-range", "index": ALL}, "value"),
+        Input({"type": "rows-del", "index": ALL}, "n_clicks"),
+        Input("rows-add", "n_clicks"),
+        State("rows", "data"),
+        prevent_initial_call=True,
+    )
+    def edit_intervals(values: list[Any], _dels: list[int | None], _add: int | None, rows: RowsData | None) -> RowsData:
+        """Apply a slider move, add an interval or remove one."""
+        if not rows or not ctx.triggered:
+            raise PreventUpdate
+        trigger = ctx.triggered_id
+        count = rows["count"]
+        ranges = [list(r) for r in rows["ranges"]]
+        active = int(rows.get("active", 0))
+        if trigger == "rows-add":
+            if not ctx.triggered[0]["value"] or len(ranges) >= MAX_INTERVALS:
+                raise PreventUpdate
+            # As wide as the selected interval, placed right after it (moved back to fit within the rows).
+            first, last = ranges[active] if 0 <= active < len(ranges) else (1, count)
+            width = last - first + 1
+            start = max(1, min(last + 1, count - width + 1))
+            ranges.append([start, start + width - 1])
+            active = len(ranges) - 1
+        elif isinstance(trigger, dict) and trigger.get("type") == "rows-del":
+            if not ctx.triggered[0]["value"] or len(ranges) <= 1 or not 0 <= trigger["index"] < len(ranges):
+                raise PreventUpdate
+            del ranges[trigger["index"]]
+            active = min(active, len(ranges) - 1)
+        elif isinstance(trigger, dict) and trigger.get("type") == "rows-range":
+            index = trigger["index"]
+            if len(values) != len(ranges) or not 0 <= index < len(ranges) or None in values[index]:
+                raise PreventUpdate
+            new = [min(max(int(round(v)), 1), count) for v in values[index]]
+            if new[0] > new[1] or new == ranges[index]:
+                raise PreventUpdate
+            ranges[index] = new
+            active = index
+        else:
+            raise PreventUpdate
+        return {"count": count, "ranges": ranges, "active": active}
 
     @app.callback(
         Output("rows-signal", "options"),
@@ -842,32 +1095,26 @@ def register_callbacks(app: Dash) -> None:
     @app.callback(
         Output("rows-graph", "figure"),
         Output("rows-graph", "style"),
-        Output("rows-label", "children"),
         Input(f"store-{Role.SIGNAL}", "data"),
         Input("rows", "data"),
         Input("rows-signal", "value"),
     )
     def update_rows_image(
         signals: StoreData | None, rows: RowsData | None, index: int | None
-    ) -> tuple[Any, dict[str, str], str]:
+    ) -> tuple[Any, dict[str, str]]:
         if not signals:
-            return empty_figure("Upload a signal spectrum"), ROWS_GRAPH_DEFAULT_STYLE, ""
+            return empty_figure("Upload a signal spectrum"), ROWS_GRAPH_DEFAULT_STYLE
         spectrum = _load([signals[index if index is not None and index < len(signals) else 0]])[0]
+        intervals = _intervals(rows)
         figure = rows_figure(
             spectrum,
-            (rows["first"], rows["last"]) if rows else None,
+            intervals or None,
             rows["count"] if rows else None,
+            int(rows.get("active", 0)) if rows else 0,
         )
         ratio = image_ratio(spectrum.wavelength, spectrum.n_rows)
         style = {"height": f"calc(100cqw * {ratio:.4f} + {ROWS_PLOT_CHROME_PX}px)"}
-        if not rows or rows["count"] <= 1:
-            return figure, style, "Single detector row"
-        if rows["first"] == rows["last"]:
-            label = f"Row {rows['first']} of {rows['count']}"
-        else:
-            n = rows["last"] - rows["first"] + 1
-            label = f"Rows {rows['first']}–{rows['last']} of {rows['count']} averaged ({n})"
-        return figure, style, label
+        return figure, style
 
     @app.callback(
         Output("result-graph", "figure"),
@@ -883,6 +1130,7 @@ def register_callbacks(app: Dash) -> None:
         Input("x-axis", "value"),
         Input("excitation", "value"),
         Input("wl-range", "value"),
+        Input("rows-signal", "value"),
         *store_inputs,
     )
     def update_plots(
@@ -894,8 +1142,12 @@ def register_callbacks(app: Dash) -> None:
         x_axis: str | None,
         excitation: float | None,
         wl_range: list[float] | None,
+        signal_index: int | None,
         *stores: StoreData | None,
     ) -> tuple[Any, Any, str, list[html.Div], Any]:
+        intervals = _intervals(rows)
+        if ctx.triggered_id == "rows-signal" and len(intervals) <= 1:
+            raise PreventUpdate  # the picked file only matters while several intervals are compared
         store_map = dict(zip(Role, stores, strict=True))
         mode = MODES[mode_key]
         quantity_obj = mode.quantity(quantity)
@@ -905,7 +1157,7 @@ def register_callbacks(app: Dash) -> None:
             return hint, empty_figure("No inputs yet"), quantity_obj.formula, [], meta
         options = _build_options(normalize, rows, smooth, x_axis, excitation, quantity, wl_range)
         try:
-            _, signals, result = _run(mode_key, store_map, options)
+            _, signals, result = _run(mode_key, store_map, options, intervals, signal_index)
         except ValueError as exc:
             alert = html.Div(str(exc), className="alert alert-error")
             return empty_figure(str(exc)), no_update, quantity_obj.formula, [alert], meta
@@ -923,6 +1175,7 @@ def register_callbacks(app: Dash) -> None:
         State("excitation", "value"),
         State("wl-range", "value"),
         *[State(f"store-{role}", "data") for role in Role],
+        State("rows-signal", "value"),
     ]
 
     def run_current(
@@ -935,6 +1188,7 @@ def register_callbacks(app: Dash) -> None:
         excitation: float | None,
         wl_range: list[float] | None,
         stores: tuple[StoreData | None, ...],
+        signal_index: int | None,
     ) -> tuple[Mode, list[AndorSpectrum], Result] | None:
         """Process the current UI state, or return ``None`` when there is nothing to export."""
         store_map = dict(zip(Role, stores, strict=True))
@@ -942,7 +1196,7 @@ def register_callbacks(app: Dash) -> None:
             return None
         options = _build_options(normalize, rows, smooth, x_axis, excitation, quantity, wl_range)
         try:
-            return _run(mode_key, store_map, options)
+            return _run(mode_key, store_map, options, _intervals(rows), signal_index)
         except ValueError:
             return None
 
@@ -983,13 +1237,13 @@ def register_callbacks(app: Dash) -> None:
             raise PreventUpdate
         else:
             target = "inputs" if trigger == "inputs-png" else "rows"
-        args, stores = state[:8], state[8:12]
+        args, stores, signal_index = state[:8], state[8:12], state[12]
 
         if target == "rows":
             if not stores[0]:
                 return keep
         else:
-            current = run_current(*args, tuple(stores))
+            current = run_current(*args, tuple(stores), signal_index)
             if current is None:
                 return keep
             mode, signals, result = current
@@ -1038,6 +1292,34 @@ def register_callbacks(app: Dash) -> None:
         return [auto, *({"label": family, "value": family} for family in installed)]
 
     @app.callback(
+        Output("png-curve-rows", "children"),
+        Output("png-curve-sig", "data"),
+        Input("png-modal", "className"),
+        Input("png-reset", "n_clicks"),
+        State("png-curve-sig", "data"),
+        *process_states,
+        prevent_initial_call=True,
+    )
+    def render_curve_rows(css: str, _reset: int | None, last: dict[str, Any] | None, *state: Any) -> tuple[Any, Any]:
+        """List the curves of the figure being exported, each with its default look.
+
+        The rows (and so any edits) are kept while the curves stay the same, and rebuilt
+        when they change or the dialog is reset.
+        """
+        target = dialog_target(css)
+        if target is None:
+            raise PreventUpdate
+        current = run_current(*state[:8], tuple(state[8:12]), state[12]) if target != "rows" else None
+        if current is None:
+            return [], {"curves": [], "stamp": time.time_ns()}
+        _, signals, result = current
+        defaults = mplexport.curve_defaults(result, [s.name for s in signals], target)
+        curves = [list(d) for d in defaults]
+        if ctx.triggered_id != "png-reset" and last and last["curves"] == curves:
+            raise PreventUpdate
+        return [_curve_row(*d) for d in defaults], {"curves": curves, "stamp": time.time_ns()}
+
+    @app.callback(
         Output({"type": PNG_OPT, "name": ALL}, "value"),
         Input("png-reset", "n_clicks"),
         State({"type": PNG_OPT, "name": ALL}, "id"),
@@ -1060,12 +1342,12 @@ def register_callbacks(app: Dash) -> None:
             content = mplexport.rows_png(
                 spectrum.wavelength,
                 spectrum.frames,
-                (rows["first"], rows["last"]) if rows else None,
+                _intervals(rows) or None,
                 style,
                 dpi,
             )
             return content, f"{Path(spectrum.name).stem}_rows.png"
-        current = run_current(*args, tuple(stores))
+        current = run_current(*args, tuple(stores), rows_index)
         if current is None:
             return None
         mode, signals, result = current
@@ -1075,22 +1357,33 @@ def register_callbacks(app: Dash) -> None:
             return mplexport.inputs_png(result, order, style, dpi), f"{stem}_{mode.key}_inputs.png"
         return mplexport.result_png(result, order, style, dpi), f"{stem}_{mode.key}_{mode.quantity(args[1]).key}.png"
 
-    dialog_states = [*process_states, State("rows-signal", "value")]
+    dialog_states = process_states
 
     @app.callback(
         Output("png-preview-img", "src"),
         Output("png-preview-info", "children"),
         Input("png-modal", "className"),
         Input({"type": PNG_OPT, "name": ALL}, "value"),
+        Input(CURVE_PATTERN, "value"),
+        Input("png-curve-sig", "data"),  # rebuilt curve rows: wait for them, then draw once
         State({"type": PNG_OPT, "name": ALL}, "id"),
+        State(CURVE_PATTERN, "id"),
         *dialog_states,
         prevent_initial_call=True,
     )
-    def update_png_preview(css: str, values: list[Any], ids: list[dict[str, str]], *state: Any) -> tuple[Any, Any]:
+    def update_png_preview(
+        css: str,
+        values: list[Any],
+        curve_values: list[Any],
+        _curves: Any,
+        ids: list[dict[str, str]],
+        curve_ids: list[dict[str, str]],
+        *state: Any,
+    ) -> tuple[Any, Any]:
         target = dialog_target(css)
         if target is None:
             raise PreventUpdate
-        style = _style_from_form([i["name"] for i in ids], values)
+        style = _full_style([i["name"] for i in ids], values, curve_ids, curve_values)
         rendered = render_png(target, style, state, mplexport.preview_dpi(style))
         if rendered is None:
             return no_update, "Nothing to export."
@@ -1106,14 +1399,24 @@ def register_callbacks(app: Dash) -> None:
         State("png-modal", "className"),
         State({"type": PNG_OPT, "name": ALL}, "value"),
         State({"type": PNG_OPT, "name": ALL}, "id"),
+        State(CURVE_PATTERN, "value"),
+        State(CURVE_PATTERN, "id"),
         *dialog_states,
         prevent_initial_call=True,
     )
-    def save_png(clicks: int | None, css: str, values: list[Any], ids: list[dict[str, str]], *state: Any) -> Any:
+    def save_png(
+        clicks: int | None,
+        css: str,
+        values: list[Any],
+        ids: list[dict[str, str]],
+        curve_values: list[Any],
+        curve_ids: list[dict[str, str]],
+        *state: Any,
+    ) -> Any:
         target = dialog_target(css)
         if not clicks or target is None:
             raise PreventUpdate
-        style = _style_from_form([i["name"] for i in ids], values)
+        style = _full_style([i["name"] for i in ids], values, curve_ids, curve_values)
         rendered = render_png(target, style, state, None)
         if rendered is None:
             raise PreventUpdate

@@ -2,8 +2,9 @@
  * Bridge between the drop zones and the pywebview window.
  *
  * - Highlights the drop zone under a dragged file (same look as hover).
- * - Remembers which zone received a drop in window.__dropRole; the file paths
- *   themselves arrive in Python through pywebview's native drop handler.
+ * - Remembers which zone received a drop in window.__dropRole and sends it, with the
+ *   dropped file names, to pywebview.api.dropped; Python looks up the full paths that
+ *   pywebview's native layer recorded.
  * - Clicking a zone opens the native file dialog (pywebview.api.browse).
  */
 (function () {
@@ -32,6 +33,17 @@
       e.preventDefault();
       window.__dropRole = roleOf(zoneOf(e.target)); // null: dropped elsewhere, treated as signal files
       clearActive();
+      const dropped = e.dataTransfer ? e.dataTransfer.files : [];
+      const n = dropped.length;
+      if (!n) return;
+      if (window.__busy) window.__busy.expect(`Reading ${n} file${n === 1 ? "" : "s"}…`); // before Python hears about the drop
+      // Windows (WebView2) hands the full paths over through this message; macOS records them natively.
+      const wv = window.chrome && window.chrome.webview;
+      if (wv && wv.postMessageWithAdditionalObjects) wv.postMessageWithAdditionalObjects("FilesDropped", dropped);
+      // Only the names go to Python; pywebview's own drop-event serialization is far too slow (see desktop.py).
+      const api = window.pywebview && window.pywebview.api;
+      if (api && api.dropped) api.dropped(window.__dropRole, Array.from(dropped, (f) => f.name));
+      else if (window.__busy) window.__busy.cancel();
     },
     true
   );

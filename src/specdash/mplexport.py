@@ -5,13 +5,14 @@ from __future__ import annotations
 import io
 import struct
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
-from specdash.figures import ACCENT, BACKGROUND_STYLES, SERIES_COLORS
+from specdash.figures import BACKGROUND_STYLES, SERIES_COLORS
+from specdash.io import legend_name
 from specdash.processing import Result
 
 FloatArray = NDArray[np.float64]
@@ -19,6 +20,8 @@ FloatArray = NDArray[np.float64]
 _FONT_CANDIDATES = ("Arial", "Liberation Sans", "Helvetica", "Nimbus Sans", "DejaVu Sans")
 _FONT_CHOICES = ("Arial", "Helvetica", "Times New Roman", "Calibri", "Courier New", "DejaVu Sans", "DejaVu Serif")
 _DASHES = {"solid": "-", "dash": "--", "dot": ":", "dashdot": "-."}
+LINE_STYLES: dict[str, str] = {"solid": "Solid", "dash": "Dashed", "dot": "Dotted", "dashdot": "Dash-dot"}
+"""Line style choices: keys are the ones used by the app's figures (see :data:`BACKGROUND_STYLES`)."""
 _SUBSCRIPTS = str.maketrans("₀₁₂₃₄₅₆₇₈₉", "0123456789")
 _SUPERSCRIPTS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻", "0123456789-")
 
@@ -46,13 +49,27 @@ LEGEND_LOCATIONS: dict[str, str] = {
 
 
 @dataclass(frozen=True)
+class CurveStyle:
+    """Per-curve overrides of the export style; ``None`` keeps the default.
+
+    Attributes:
+        color: Line color as ``#rgb`` / ``#rrggbb``.
+        linestyle: A key of :data:`LINE_STYLES`.
+    """
+
+    color: str | None = None
+    linestyle: str | None = None
+
+
+@dataclass(frozen=True)
 class PlotStyle:
     """Look of the exported result figure; the defaults are the publication style.
 
     Attributes:
         width_cm: Axes width in cm.
         height_cm: Axes height in cm.
-        line_width: Curve line width in pt.
+        line_width: Line width of all curves in pt.
+        line_alpha: Opacity of all curves, from 0 (invisible) to 1.
         axis_width: Axes frame and tick line width in pt.
         font: Font family, or ``"auto"`` for Arial / the closest installed sans-serif.
         label_size: Axis label font size in pt.
@@ -74,14 +91,16 @@ class PlotStyle:
         y_label: Y-axis label, or empty for the processed default.
         dpi: Resolution of the saved file.
         transparent: Save without a white background.
+        curves: Overrides of color and line style, keyed by the curve's legend label.
     """
 
     width_cm: float = FIG_CM[0]
     height_cm: float = FIG_CM[1]
     line_width: float = 0.8
+    line_alpha: float = 1.0
     axis_width: float = 0.8
     font: str = "auto"
-    label_size: float = 8
+    label_size: float = 7
     tick_size: float = 7
     legend_size: float = 6
     legend: str = "auto"
@@ -99,6 +118,7 @@ class PlotStyle:
     y_label: str = ""
     dpi: int = DPI
     transparent: bool = False
+    curves: dict[str, CurveStyle] = field(default_factory=dict)
 
 
 def available_fonts() -> list[str]:
@@ -237,7 +257,7 @@ def _limits(
 
 
 Curve = tuple[str, FloatArray, str, str]
-"""A line to draw: legend label, Y values, color and matplotlib line style."""
+"""A line to draw: legend label, Y values, color and line style (a key of :data:`LINE_STYLES`)."""
 
 
 def _add_legend(ax: Any, count: int, style: PlotStyle) -> None:
@@ -288,7 +308,16 @@ def _curves_png(
         fig = Figure()
         ax = fig.subplots()
         for label, y, color, linestyle in curves:
-            ax.plot(result.x, y, lw=style.line_width, color=color, ls=linestyle, label=label)
+            own = style.curves.get(label, CurveStyle())
+            ax.plot(
+                result.x,
+                y,
+                lw=style.line_width,
+                alpha=style.line_alpha,
+                color=own.color or color,
+                ls=_DASHES.get(own.linestyle or linestyle, "-"),
+                label=label,
+            )
         xlim, ylim = _limits(result, {label: y for label, y, _, _ in curves}, style)
         if xlim:
             ax.set_xlim(xlim)
@@ -302,6 +331,52 @@ def _curves_png(
         if show_legend and curves:
             _add_legend(ax, len(curves), style)
         return _to_png(fig)
+
+
+def _result_curves(result: Result, signal_order: Sequence[str]) -> list[Curve]:
+    """The processed curves with the app's colors."""
+    order = list(signal_order)
+    return [
+        (
+            legend_name(name),
+            y,
+            SERIES_COLORS[result.groups.get(name, order.index(name) if name in order else 0) % len(SERIES_COLORS)],
+            "solid",
+        )
+        for name, y in result.curves.items()
+    ]
+
+
+def _inputs_curves(result: Result, signal_order: Sequence[str]) -> list[Curve]:
+    """The normalized input spectra with the app's colors and dashes."""
+    order = list(signal_order)
+    curves: list[Curve] = []
+    for label, y in result.inputs.items():
+        symbol, _, name = label.partition(": ")
+        if symbol == "S":
+            index = result.groups.get(label, order.index(name) if name in order else 0)
+            color, linestyle = SERIES_COLORS[index % len(SERIES_COLORS)], "solid"
+        else:
+            color, linestyle = BACKGROUND_STYLES.get(symbol, ("#50555e", "dash"))
+            if label in result.groups:  # several row intervals: the interval's color, the role's dash
+                color = SERIES_COLORS[result.groups[label] % len(SERIES_COLORS)]
+        curves.append((f"{symbol}: {legend_name(name)}" if name else label, y, color, linestyle))
+    return curves
+
+
+def curve_defaults(result: Result, signal_order: Sequence[str], target: str) -> list[tuple[str, str, str]]:
+    """List the curves of an exported figure with their default look.
+
+    Args:
+        result: Processed result.
+        signal_order: Signal names in upload order, so colors match the app.
+        target: ``"result"`` or ``"inputs"``.
+
+    Returns:
+        ``(label, color, line style key)`` per curve, in drawing order.
+    """
+    curves = _inputs_curves(result, signal_order) if target == "inputs" else _result_curves(result, signal_order)
+    return [(label, color, linestyle) for label, _, color, linestyle in curves]
 
 
 def result_png(
@@ -321,12 +396,7 @@ def result_png(
     Returns:
         PNG file content.
     """
-    order = list(signal_order)
-    curves = [
-        (name, y, SERIES_COLORS[(order.index(name) if name in order else 0) % len(SERIES_COLORS)], "-")
-        for name, y in result.curves.items()
-    ]
-    return _curves_png(result, curves, result.y_label, style or PlotStyle(), dpi)
+    return _curves_png(result, _result_curves(result, signal_order), result.y_label, style or PlotStyle(), dpi)
 
 
 def inputs_png(
@@ -346,17 +416,9 @@ def inputs_png(
     Returns:
         PNG file content.
     """
-    order = list(signal_order)
-    curves: list[Curve] = []
-    for label, y in result.inputs.items():
-        symbol, _, name = label.partition(": ")
-        if symbol == "S":
-            color, linestyle = SERIES_COLORS[(order.index(name) if name in order else 0) % len(SERIES_COLORS)], "-"
-        else:
-            color, dash = BACKGROUND_STYLES.get(symbol, ("#50555e", "dash"))
-            linestyle = _DASHES.get(dash, "--")
-        curves.append((label, y, color, linestyle))
-    return _curves_png(result, curves, f"Intensity ({result.intensity_unit})", style or PlotStyle(), dpi)
+    return _curves_png(
+        result, _inputs_curves(result, signal_order), f"Intensity ({result.intensity_unit})", style or PlotStyle(), dpi
+    )
 
 
 def preview_dpi(style: PlotStyle) -> int:
@@ -375,16 +437,16 @@ def preview_png(result: Result, signal_order: Sequence[str], style: PlotStyle) -
 def rows_png(
     wavelength: FloatArray,
     frames: FloatArray,
-    rows: tuple[int, int] | None,
+    rows: Sequence[tuple[int, int]] | None,
     style: PlotStyle | None = None,
     dpi: int | None = None,
 ) -> bytes:
-    """Render the detector image with the selected rows outlined in blue.
+    """Render the detector image with the selected row intervals outlined, each in its curve color.
 
     Args:
         wavelength: Wavelength per pixel, shape ``(n_pixels,)``.
         frames: Raw counts, shape ``(n_pixels, n_rows)``.
-        rows: Inclusive one-based row range, or ``None`` for all rows.
+        rows: Inclusive one-based row ranges, or ``None`` for all rows.
         style: Look of the figure. The axes keep the image's aspect, so only
             ``width_cm`` sets the size; ``line_width`` is the outline width.
         dpi: Override of ``style.dpi``, e.g. for a quick preview.
@@ -404,7 +466,7 @@ def rows_png(
     if dpi is not None:
         style = replace(style, dpi=dpi)
     n_rows = frames.shape[1]
-    first, last = rows or (1, n_rows)
+    intervals = list(rows or [(1, n_rows)])
     image = frames.T
     low, high = np.percentile(image, [1, 99])
     if not high > low:
@@ -425,16 +487,17 @@ def rows_png(
             extent=(x0, x1, n_rows + 0.5, 0.5),
         )
         if n_rows > 1:
-            ax.add_patch(
-                Rectangle(
-                    (x0, first - 0.5),
-                    x1 - x0,
-                    last - first + 1,
-                    fill=False,
-                    edgecolor=ACCENT,
-                    linewidth=style.line_width,
+            for index, (first, last) in enumerate(intervals):
+                ax.add_patch(
+                    Rectangle(
+                        (x0, first - 0.5),
+                        x1 - x0,
+                        last - first + 1,
+                        fill=False,
+                        edgecolor=SERIES_COLORS[index % len(SERIES_COLORS)],
+                        linewidth=style.line_width,
+                    )
                 )
-            )
         ax.set_xlabel(_mpl_text(style.x_label or "Wavelength (nm)"))
         ax.set_ylabel(_mpl_text(style.y_label or "Row"))
         ax.yaxis.set_major_locator(MaxNLocator(integer=True, nbins=4))

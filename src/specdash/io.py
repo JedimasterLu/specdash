@@ -165,6 +165,11 @@ class AndorSpectrum:
         )
 
 
+def legend_name(name: str) -> str:
+    """Drop the ``.asc`` extension of a file name for display in legends."""
+    return name[:-4] if name.lower().endswith(".asc") else name
+
+
 def _to_float(value: str | None) -> float | None:
     """Convert a metadata string to float, returning ``None`` on failure."""
     if value is None:
