@@ -1,9 +1,11 @@
 /*
  * Row selection on the detector image (#rows-graph).
  *
- * Drag on empty space to select rows, drag an edge to resize, drag inside the
- * selection to move it. The outline is the figure's first shape and follows the
- * cursor, snapped to whole rows; on release the range goes to the "rows" store.
+ * Every selected interval is one of the figure's shapes (an outline in that interval's color);
+ * layout.meta.active says which one dragging on empty space edits. Drag an edge to resize that
+ * interval, drag inside it to move it, drag on empty space to select a new range for the active
+ * interval. The outline follows the cursor, snapped to whole rows; on release all ranges go to
+ * the "rows" store.
  */
 (function () {
   const GRAPH_ID = "rows-graph";
@@ -12,21 +14,23 @@
 
   function geometry(gd) {
     const ya = gd._fullLayout && gd._fullLayout.yaxis;
-    const shape = gd.layout && gd.layout.shapes && gd.layout.shapes[0];
-    const count = gd.layout && gd.layout.meta && gd.layout.meta.count;
-    if (!ya || !shape || !count) return null;
+    const shapes = gd.layout && gd.layout.shapes;
+    const meta = gd.layout && gd.layout.meta;
+    if (!ya || !shapes || !shapes.length || !meta || !meta.count) return null;
     const box = gd.getBoundingClientRect();
     const [bottom, top] = ya.range; // reversed axis: row 1 is at the top
+    const toPx = (row) => box.top + ya._offset + ((row - top) / (bottom - top)) * ya._length;
+    const active = Math.min(Math.max(meta.active || 0, 0), shapes.length - 1);
     return {
-      count,
-      first: Math.round(shape.y0 + 0.5),
-      last: Math.round(shape.y1 - 0.5),
+      count: meta.count,
+      active,
+      ranges: shapes.map((s) => ({ first: Math.round(s.y0 + 0.5), last: Math.round(s.y1 - 0.5) })),
       top: box.top + ya._offset,
       length: ya._length,
       left: box.left + gd._fullLayout.xaxis._offset,
       width: gd._fullLayout.xaxis._length,
       toRow: (clientY) => top + ((clientY - box.top - ya._offset) / ya._length) * (bottom - top),
-      toPx: (row) => box.top + ya._offset + ((row - top) / (bottom - top)) * ya._length,
+      toPx,
     };
   }
 
@@ -49,22 +53,31 @@
     return [Math.min(k, drag.anchor) + 1, Math.max(k, drag.anchor)];
   }
 
-  function show(gd, [first, last]) {
-    window.Plotly.relayout(gd, { "shapes[0].y0": first - 0.5, "shapes[0].y1": last + 0.5 });
+  function show(gd, index, [first, last]) {
+    window.Plotly.relayout(gd, { [`shapes[${index}].y0`]: first - 0.5, [`shapes[${index}].y1`]: last + 0.5 });
   }
 
+  // What a mouse press at this point would do: an edge or the inside of an interval (the active one
+  // wins where they overlap), or else a new selection for the active interval.
   function hit(g, e) {
     const inside = e.clientX >= g.left && e.clientX <= g.left + g.width;
     const y = e.clientY;
     if (!inside || y < g.top || y > g.top + g.length) return null;
-    const topPx = g.toPx(g.first - 0.5);
-    const bottomPx = g.toPx(g.last + 0.5);
-    const edge = Math.min(EDGE_PX, (bottomPx - topPx) / 3);
-    if (Math.abs(y - topPx) <= edge) return { mode: "resize", anchor: g.last, edge: true };
-    if (Math.abs(y - bottomPx) <= edge) return { mode: "resize", anchor: g.first - 1, edge: true };
-    const all = g.first === 1 && g.last === g.count;
-    if (!all && y > topPx && y < bottomPx) return { mode: "move", grab: g.toRow(y) - (g.first - 0.5) };
-    return { mode: "resize", anchor: boundary(g.toRow(y), g.count) };
+    const order = [g.active, ...g.ranges.keys()].filter((i, n, all) => all.indexOf(i) === n);
+    const spans = order.map((index) => {
+      const { first, last } = g.ranges[index];
+      return { index, first, last, topPx: g.toPx(first - 0.5), bottomPx: g.toPx(last + 0.5) };
+    });
+    for (const { index, first, last, topPx, bottomPx } of spans) {
+      const edge = Math.min(EDGE_PX, (bottomPx - topPx) / 3);
+      if (Math.abs(y - topPx) <= edge) return { index, mode: "resize", anchor: last, edge: true };
+      if (Math.abs(y - bottomPx) <= edge) return { index, mode: "resize", anchor: first - 1, edge: true };
+    }
+    for (const { index, first, last, topPx, bottomPx } of spans) {
+      const all = first === 1 && last === g.count;
+      if (!all && y > topPx && y < bottomPx) return { index, mode: "move", grab: g.toRow(y) - (first - 0.5) };
+    }
+    return { index: g.active, mode: "resize", anchor: boundary(g.toRow(y), g.count) };
   }
 
   function graphOf(e) {
@@ -81,8 +94,9 @@
       const start = g && hit(g, e);
       if (!start) return;
       e.preventDefault();
-      drag = { gd, first: g.first, last: g.last, ...start };
-      show(gd, selection(g, e));
+      const { first, last } = g.ranges[start.index];
+      drag = { gd, first, last, ...start };
+      show(gd, drag.index, selection(g, e));
     },
     true
   );
@@ -90,7 +104,7 @@
   document.addEventListener("mousemove", (e) => {
     if (drag) {
       const g = geometry(drag.gd);
-      if (g) show(drag.gd, selection(g, e));
+      if (g) show(drag.gd, drag.index, selection(g, e));
       return;
     }
     const gd = graphOf(e);
@@ -104,11 +118,14 @@
 
   document.addEventListener("mouseup", (e) => {
     if (!drag) return;
-    const gd = drag.gd;
+    const { gd, index } = drag;
     const g = geometry(gd);
-    const [first, last] = g ? selection(g, e) : [drag.first, drag.last];
+    const final = g && selection(g, e);
     drag = null;
-    show(gd, [first, last]);
-    if (g) window.dash_clientside.set_props("rows", { data: { first, last, count: g.count } });
+    if (!g) return;
+    show(gd, index, final);
+    const ranges = g.ranges.map((r) => [r.first, r.last]);
+    ranges[index] = final;
+    window.dash_clientside.set_props("rows", { data: { count: g.count, ranges, active: index } });
   });
 })();

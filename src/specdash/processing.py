@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import io
 import json
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 import numpy as np
 from numpy.typing import NDArray
 
-from specdash.io import AndorSpectrum
+from specdash.io import AndorSpectrum, legend_name
 
 FloatArray = NDArray[np.float64]
 
@@ -217,6 +218,8 @@ class Result:
         inputs: Normalized input spectra on the common grid, keyed by a
             ``"<symbol>: <name>"`` label.
         warnings: Non-fatal issues encountered during processing.
+        groups: For a result of several detector row intervals (see :func:`process_intervals`),
+            the index of the interval each curve / input label belongs to; empty otherwise.
     """
 
     wavelength: FloatArray
@@ -228,6 +231,7 @@ class Result:
     curves: dict[str, FloatArray] = field(default_factory=dict)
     inputs: dict[str, FloatArray] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    groups: dict[str, int] = field(default_factory=dict)
 
 
 def _safe_divide(num: FloatArray, den: FloatArray) -> FloatArray:
@@ -428,6 +432,50 @@ def process(
         inputs=inputs,
         warnings=list(dict.fromkeys(warnings)),
     )
+
+
+def process_intervals(
+    mode: Mode,
+    signal: AndorSpectrum,
+    backgrounds: dict[Role, AndorSpectrum | None],
+    options: Options,
+    intervals: Sequence[tuple[int, int]],
+) -> Result:
+    """Process one signal separately for several detector row intervals.
+
+    Each interval gets its own curve (and its own normalized inputs), so changes of one
+    measurement along the detector rows can be compared. Curve labels carry the interval,
+    and :attr:`Result.groups` tells which interval a label belongs to.
+
+    Args:
+        mode: Measurement mode.
+        signal: The signal spectrum.
+        backgrounds: Spectra for the non-signal roles, see :func:`process`.
+        options: Processing options; ``options.rows`` is replaced by each interval.
+        intervals: Inclusive one-based ``(first, last)`` row ranges, at least one.
+
+    Returns:
+        A result whose curves and inputs hold every interval.
+
+    Raises:
+        ValueError: As :func:`process`.
+    """
+    results = [process(mode, [signal], backgrounds, replace(options, rows=(f - 1, l - 1))) for f, l in intervals]
+    curves: dict[str, FloatArray] = {}
+    inputs: dict[str, FloatArray] = {}
+    groups: dict[str, int] = {}
+    warnings: list[str] = []
+    for index, ((first, last), result) in enumerate(zip(intervals, results, strict=True)):
+        suffix = f"row {first}" if first == last else f"rows {first}–{last}"
+        for name, values in result.curves.items():
+            key = f"{legend_name(name)} · {suffix}"
+            curves[key], groups[key] = values, index
+        for label, values in result.inputs.items():
+            symbol, _, name = label.partition(": ")
+            key = f"{symbol}: {legend_name(name)} · {suffix}"
+            inputs[key], groups[key] = values, index
+        warnings += result.warnings
+    return replace(results[0], curves=curves, inputs=inputs, groups=groups, warnings=list(dict.fromkeys(warnings)))
 
 
 def _export_columns(result: Result, include_inputs: bool) -> dict[str, FloatArray]:

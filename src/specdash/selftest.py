@@ -39,7 +39,7 @@ def _check() -> None:
     from specdash.figures import result_figure, rows_figure
 
     result_figure(result, [spectrum.name])
-    rows_figure(spectrum, (1, 2), spectrum.n_rows)
+    rows_figure(spectrum, [(1, 2)],spectrum.n_rows)
     for png in (
         mplexport.result_png(result, [spectrum.name]),
         mplexport.preview_png(
@@ -50,9 +50,9 @@ def _check() -> None:
             mplexport.result_png(result, [spectrum.name], mplexport.PlotStyle(legend=where, legend_cols=2))
             for where in ("outside right", "outside top", "outside bottom")
         ),
-        mplexport.rows_png(spectrum.wavelength, spectrum.frames, (1, 2)),
+        mplexport.rows_png(spectrum.wavelength, spectrum.frames, [(1, 2)]),
         mplexport.rows_png(
-            spectrum.wavelength, spectrum.frames, (1, 2), mplexport.PlotStyle(width_cm=6, box=False, tick_direction="out")
+            spectrum.wavelength, spectrum.frames, [(1, 2)], mplexport.PlotStyle(width_cm=6, box=False, tick_direction="out")
         ),
     ):
         if not png.startswith(b"\x89PNG"):

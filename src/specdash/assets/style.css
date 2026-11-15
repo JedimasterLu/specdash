@@ -302,7 +302,6 @@ h2 + .field-label, .card-head + .field-label { margin-top: 0; }
 
 /* ---------- Detector rows image ---------- */
 
-#rows-label { margin-top: var(--gap-item); }
 .rows-wrap { container-type: inline-size; }
 
 /* Hover label eases toward the cursor (position set by hover_line.js). */
@@ -489,3 +488,80 @@ h2 + .field-label, .card-head + .field-label { margin-top: 0; }
   .modal-body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
   .png-controls { border-right: none; border-bottom: 1px solid var(--border); }
 }
+
+/* ---------- Loading dialog (assets/busy.js) ---------- */
+
+.busy { display: none; position: fixed; inset: 0; z-index: 200; align-items: center; justify-content: center; cursor: progress; }
+.busy.open { display: flex; }
+.busy-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 240px;
+  padding: 20px 26px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 24px 64px rgba(16, 16, 15, 0.28), 0 4px 12px rgba(16, 16, 15, 0.1);
+  animation: modal-pop 0.18s ease-out;
+}
+.busy-text { font-size: 14px; color: var(--text); }
+/* Only transform is animated, so the compositor can keep it turning while the page is busy drawing. */
+.busy-spinner {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: 2.5px solid var(--accent-soft);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: busy-spin 0.8s linear infinite;
+}
+@keyframes busy-spin { to { transform: rotate(360deg); } }
+
+/* ---------- Per-curve style rows in the PNG dialog ---------- */
+
+.png-curve { padding: 8px 0; }
+.png-curve + .png-curve { border-top: 1px dashed var(--border); }
+.png-curve-name {
+  margin-bottom: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.png-curve-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 6px; align-items: center; }
+.png-color { display: flex; align-items: center; gap: 6px; }
+.png-color .png-input { min-width: 0; font-family: var(--mono); font-size: 12px; padding: 0 6px; }
+.png-swatch {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  cursor: pointer;
+}
+.png-swatch::-webkit-color-swatch-wrapper { padding: 0; }
+.png-swatch::-webkit-color-swatch { border: none; border-radius: 5px; }
+.png-swatch::-moz-color-swatch { border: none; border-radius: 5px; }
+
+/* Dash hides a slider's value box in containers up to 300px wide (its range-slider rule also matches
+   single sliders); the dialog's controls column is a little narrower than that, so show it anyway. */
+.png-controls .dash-slider-container .dash-range-slider-input { display: block !important; }
+
+/* ---------- Detector row intervals ---------- */
+
+.intervals:empty { display: none; }
+.intervals { margin-top: 0; }
+.interval { padding: 8px 0; }
+.interval:first-child { padding-top: 0; }
+.interval + .interval { border-top: 1px dashed var(--border); }
+.interval-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.interval-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.interval-name { flex: 1; font-size: 12px; color: var(--text-2); }
+.rows-add { margin-top: 6px; }
+.rows-add:disabled { opacity: 0.4; cursor: default; }

@@ -8,7 +8,7 @@ import numpy as np
 import plotly.graph_objects as go
 from numpy.typing import NDArray
 
-from specdash.io import AndorSpectrum
+from specdash.io import AndorSpectrum, legend_name
 from specdash.processing import Result
 
 FloatArray = NDArray[np.float64]
@@ -146,9 +146,9 @@ def result_figure(result: Result, signal_order: Sequence[str]) -> go.Figure:
     """
     fig = go.Figure()
     for name, y in result.curves.items():
-        index = list(signal_order).index(name) if name in signal_order else 0
+        index = result.groups.get(name, list(signal_order).index(name) if name in signal_order else 0)
         color = SERIES_COLORS[index % len(SERIES_COLORS)]
-        fig.add_trace(_line(result.x, y, name, color))
+        fig.add_trace(_line(result.x, y, legend_name(name), color))
     fig.update_layout(_base_layout(result.x_label, result.y_label, len(result.curves) > 1))
     return fig
 
@@ -167,11 +167,13 @@ def inputs_figure(result: Result, signal_order: Sequence[str]) -> go.Figure:
     for label, y in result.inputs.items():
         symbol, _, name = label.partition(": ")
         if symbol == "S":
-            index = list(signal_order).index(name) if name in signal_order else 0
+            index = result.groups.get(label, list(signal_order).index(name) if name in signal_order else 0)
             color, dash = SERIES_COLORS[index % len(SERIES_COLORS)], "solid"
         else:
             color, dash = BACKGROUND_STYLES.get(symbol, (TEXT_SECONDARY, "dash"))
-        fig.add_trace(_line(result.x, y, label, color, dash))
+            if label in result.groups:  # several row intervals: the interval's color, the role's dash
+                color = SERIES_COLORS[result.groups[label] % len(SERIES_COLORS)]
+        fig.add_trace(_line(result.x, y, f"{symbol}: {legend_name(name)}" if name else label, color, dash))
     fig.update_layout(
         _base_layout(result.x_label, f"Intensity ({result.intensity_unit})", len(result.inputs) > 1)
     )
@@ -210,25 +212,28 @@ def image_ratio(wavelength: FloatArray, n_rows: int) -> float:
 
 def rows_figure(
     spectrum: AndorSpectrum,
-    rows: tuple[int, int] | None,
+    rows: Sequence[tuple[int, int]] | None,
     selectable: int | None = None,
+    active: int = 0,
 ) -> go.Figure:
     """Show the detector image as grayscale (99:1 contrast) with the selected rows outlined.
 
-    The outline is the figure's only shape. ``assets/rows_select.js`` moves it
-    while the user drags, snapped to whole rows, and reads ``layout.meta`` for
-    the number of selectable rows.
+    Each selected interval is one rectangle, in the color its curve has in the result plot
+    (the active one drawn thicker). ``assets/rows_select.js`` moves them while the user
+    drags, snapped to whole rows, and reads ``layout.meta`` for the number of selectable
+    rows and the active interval.
 
     Args:
         spectrum: The spectrum whose detector image is shown.
-        rows: Inclusive one-based row range, or ``None`` for all rows.
+        rows: Inclusive one-based row ranges, or ``None`` for all rows.
         selectable: Number of rows that may be selected, defaulting to all.
+        active: Index of the interval that dragging on the image edits.
 
     Returns:
         The image figure.
     """
     wavelength, n_rows = spectrum.wavelength, spectrum.n_rows
-    first, last = rows or (1, n_rows)
+    intervals = list(rows or [(1, n_rows)])
     x, z, low, high = spectrum.display_image(MAX_IMAGE_COLUMNS)
 
     fig = go.Figure(
@@ -295,11 +300,12 @@ def rows_figure(
                 "x1": float(x[-1]),
                 "y0": first - 0.5,
                 "y1": last + 0.5,
-                "line": {"color": ACCENT, "width": 1.4},
+                "line": {"color": SERIES_COLORS[i % len(SERIES_COLORS)], "width": 1.8 if i == active else 1.4},
             }
+            for i, (first, last) in enumerate(intervals)
         ]
         if n_rows > 1
         else [],
-        meta={"count": min(selectable or n_rows, n_rows)},
+        meta={"count": min(selectable or n_rows, n_rows), "active": active},
     )
     return fig
