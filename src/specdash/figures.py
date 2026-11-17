@@ -8,6 +8,7 @@ import numpy as np
 import plotly.graph_objects as go
 from numpy.typing import NDArray
 
+from specdash.fitting import FitResult
 from specdash.io import AndorSpectrum, legend_name
 from specdash.processing import Result
 
@@ -308,4 +309,39 @@ def rows_figure(
         else [],
         meta={"count": min(selectable or n_rows, n_rows), "active": active},
     )
+    return fig
+
+
+def mask_shapes(masks: Sequence[Sequence[float]], active: int = -1) -> list[dict[str, object]]:
+    """Bands over the X regions excluded from a fit, three shapes each (fill, left edge, right edge).
+
+    Each mask has its own series color; the active one is stronger. ``assets/fit_select.js`` relies on the order.
+    """
+    shapes: list[dict[str, object]] = []
+    for i, (a, b) in enumerate(masks):
+        color = SERIES_COLORS[i % len(SERIES_COLORS)]
+        rgb = ",".join(str(int(color[k : k + 2], 16)) for k in (1, 3, 5))
+        base = {"xref": "x", "yref": "paper", "y0": 0, "y1": 1}
+        shapes.append({**base, "type": "rect", "x0": a, "x1": b, "fillcolor": f"rgba({rgb},{0.24 if i == active else 0.12})", "line": {"width": 0}, "layer": "below"})
+        for edge in (a, b):
+            shapes.append({**base, "type": "line", "x0": edge, "x1": edge, "line": {"color": color, "width": 2 if i == active else 1.5}})
+    return shapes
+
+
+def fit_figure(result: Result, fit: FitResult, masks: Sequence[Sequence[float]] = (), active: int = -1) -> go.Figure:
+    """Plot a peak fit: data, total fit and peaks above, the residual below."""
+    fig = go.Figure()
+    fig.add_trace(_line(fit.x, fit.y, "Data", TEXT_SECONDARY))
+    fig.add_trace(_line(fit.x, fit.fit, "Fit", "#d03b3b"))
+    for i, part in enumerate(fit.parts):
+        fig.add_trace(_line(fit.x, part, f"Peak {i + 1}", SERIES_COLORS[i % len(SERIES_COLORS)], "dash"))
+    residual = _line(fit.x, fit.y - fit.fit, "Residual", TEXT_SECONDARY)
+    residual.yaxis = "y2"
+    fig.add_trace(residual)
+    layout = _base_layout(result.x_label, result.y_label, True)
+    layout["xaxis"]["anchor"] = "y2"
+    layout["yaxis"]["domain"] = [0.3, 1]
+    layout["yaxis2"] = {**layout["yaxis"], "domain": [0, 0.22], "title": {**layout["yaxis"]["title"], "text": "Residual"}}  # type: ignore[dict-item]
+    layout.update(shapes=mask_shapes(masks, active), meta={"active": active}, dragmode=False)  # masks are edited by assets/fit_select.js
+    fig.update_layout(layout)
     return fig

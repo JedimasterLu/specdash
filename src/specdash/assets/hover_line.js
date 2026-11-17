@@ -10,7 +10,7 @@
   const GAP_PX = 8;
   const BOTTOM_TRIM_PX = 2;
   const ENTER_PX = 12;
-  const GRAPH_IDS = ["result-graph", "inputs-graph"];
+  const GRAPH_IDS = ["result-graph", "inputs-graph", "fit-graph"];
   // An SVG line placed just before the hover layer, so the label is always drawn above it.
   const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
   line.setAttribute("style", "stroke:#8a8f98;stroke-width:1;opacity:0.8;pointer-events:none");
@@ -58,17 +58,17 @@
       return;
     }
     const box = hover.ownerSVGElement.getBoundingClientRect();
-    const { xaxis, yaxis } = layout;
+    const { xaxis, _size: size } = layout; // the whole plot area, also with stacked subplots
     const x = e.clientX - box.left;
-    const y = e.clientY - box.top - yaxis._offset;
-    if (x < xaxis._offset || x > xaxis._offset + xaxis._length || y < 0 || y > yaxis._length) {
+    const y = e.clientY - box.top - size.t;
+    if (x < xaxis._offset || x > xaxis._offset + xaxis._length || y < 0 || y > size.h) {
       line.remove();
       return;
     }
     if (line.nextSibling !== hover) hover.parentNode.insertBefore(line, hover);
     line.setAttribute("x1", x);
     line.setAttribute("x2", x);
-    line.setAttribute("y1", yaxis._offset);
-    line.setAttribute("y2", yaxis._offset + yaxis._length);
+    line.setAttribute("y1", size.t);
+    line.setAttribute("y2", size.t + size.h);
   }, true);
 })();

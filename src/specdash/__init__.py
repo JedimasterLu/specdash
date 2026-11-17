@@ -3,4 +3,4 @@
 from specdash.io import AndorSpectrum, parse_asc, read_asc
 
 __all__ = ["AndorSpectrum", "parse_asc", "read_asc"]
-__version__ = "0.3.2"
+__version__ = "0.4.0"

@@ -559,3 +559,29 @@ h2 + .field-label, .card-head + .field-label { margin-top: 0; }
 .interval-name { flex: 1; font-size: 12px; color: var(--text-2); }
 .rows-add { margin-top: 6px; }
 .rows-add:disabled { opacity: 0.4; cursor: default; }
+
+/* ---------- Peak fit dialog ---------- */
+.fit-body { grid-template-columns: 440px minmax(0, 1fr); }
+.fit-row { display: grid; grid-template-columns: 54px 1fr 1fr 1fr 24px; gap: 6px; align-items: center; margin-top: 6px; }
+.fit-head { margin-top: 8px; font-size: 11px; color: var(--text-3); }
+.fit-bg { grid-template-columns: 1fr 24px; margin: 0; }
+.fit-results { flex: 1; min-height: 0; overflow-y: auto; font-size: 12px; }
+.fit-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.fit-table th, .fit-table td { padding: 3px 8px 3px 0; text-align: left; border-bottom: 1px solid var(--border); }
+@media (max-width: 900px) { .fit-body { grid-template-columns: 1fr; } }
+.fit-mask-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fit-limits { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.fit-limits { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.fit-mask-name { border: none; background: none; padding: 0; text-align: left; cursor: pointer; font-family: inherit; }
+/* Card header actions separated by short vertical rules. */
+.head-actions { display: flex; align-items: center; }
+.head-actions .btn-link + .btn-link { position: relative; margin-left: 10px; }
+.head-actions .btn-link + .btn-link::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: 50%;
+  height: 12px;
+  margin-top: -6px;
+  border-left: 1px solid var(--border-strong);
+}
