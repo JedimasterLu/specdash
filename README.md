@@ -50,9 +50,9 @@ Missing optional inputs are treated as zero, and the app shows a warning when th
 - Interactive plots (zoom, pan, hover crosshair, SVG snapshot from the mode bar).
 - X axis in wavelength, photon energy or Raman shift (configurable excitation wavelength).
 - Optional Savitzky–Golay smoothing and detector-row selection.
-- Export the processed curves, plus the normalized inputs, as CSV, TXT, NPY or JSON through a native Save dialog.
-- Export **PNG** figures with a style dialog and live preview. **Export → PNG** (Result curves), **Save PNG** in the
-  Raw inputs card and **Save PNG** in the Detector rows card (the image with the selected rows outlined in blue) all
+- Export the processed curves, plus the normalized inputs, as CSV through a native Save dialog (**Export CSV** in the Result card).
+- Export **PNG** figures with a style dialog and live preview. **Save PNG** in the Result card,
+  **Save PNG** in the Raw inputs card and **Save PNG** in the Detector rows card (the image with the selected rows outlined in blue) all
   open it. You can set the axes size, line and axes widths, font and font sizes, legend position and frame, tick
   direction and length, grid, box, axis ranges and labels, resolution and a transparent background; **Reset** restores
   the defaults. The defaults are a publication style (Arial 7 pt, 4.5 × 3.5 cm axes, inward ticks, 600 dpi), drawn by

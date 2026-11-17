@@ -308,6 +308,24 @@ def _x_values(wavelength: FloatArray, options: Options) -> FloatArray:
     return wavelength
 
 
+_X_DENSITY_UNITS: dict[XAxis, str] = {XAxis.WAVELENGTH: "/nm", XAxis.ENERGY: "/eV", XAxis.RAMAN: "/cm⁻¹"}
+"""Unit of the spectral density per x-axis representation."""
+
+
+def _density_factor(wavelength: FloatArray, options: Options) -> FloatArray | None:
+    """Factor turning a per-nm intensity into a density in the selected x-axis unit.
+
+    Intensities are densities (counts per nm), so changing the x axis needs the Jacobian
+    ``|d lambda / d x|``: ``lambda^2 / hc`` for eV and ``lambda^2 / 1e7`` for cm⁻¹. Returns
+    ``None`` for the wavelength axis, where nothing changes.
+    """
+    if options.x_axis is XAxis.ENERGY:
+        return wavelength**2 / HC_EV_NM
+    if options.x_axis is XAxis.RAMAN:
+        return wavelength**2 / 1e7
+    return None
+
+
 def _compute(
     quantity: str, s: FloatArray, b: FloatArray | None, r: FloatArray | None, d: FloatArray | None
 ) -> FloatArray:
@@ -391,6 +409,9 @@ def process(
     unit = "counts"
     if options.per_second:
         unit += "/s"
+    # Every input is scaled alike, so ratio quantities (T, R, absorbance, ...) are unaffected.
+    density = _density_factor(grid, options)
+    unit += _X_DENSITY_UNITS[options.x_axis]
     if options.per_accumulation:
         unit += " per acc."
 
@@ -402,6 +423,8 @@ def process(
             bg[role] = None
             continue
         bg[role] = _on_grid(spectrum, grid, options, warnings)
+        if density is not None and bg[role] is not None:
+            bg[role] = bg[role] * density
         inputs[f"{ROLE_SYMBOLS[role]}: {spectrum.name}"] = bg[role]
 
     if mode.family is Family.OPTICAL and bg.get(Role.DARK) is None and quantity.key != "raw":
@@ -410,6 +433,8 @@ def process(
     curves: dict[str, FloatArray] = {}
     for spectrum in signals:
         s = _on_grid(spectrum, grid, options, warnings)
+        if density is not None:
+            s = s * density
         inputs[f"S: {spectrum.name}"] = s
         y = _compute(quantity.key, s, bg.get(Role.SUBSTRATE), bg.get(Role.REFERENCE), bg.get(Role.DARK))
         y = _smooth(y, options.smooth_window)

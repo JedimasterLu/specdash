@@ -366,17 +366,6 @@ h2 + .field-label, .card-head + .field-label { margin-top: 0; }
 .dash-dropdown:disabled:hover { border-color: var(--border-strong); background: var(--bg); }
 .dash-dropdown:disabled .dash-dropdown-trigger-icon { color: #c4c4c4; }
 
-/* ---------- Export menu (top bar) ---------- */
-.export-menu { width: 102px; }
-.export-menu.dash-dropdown {
-  border-color: transparent;
-  background: transparent;
-  font-weight: 700;
-  font-size: 16px;
-}
-.export-menu.dash-dropdown:hover { background: var(--bg); border-color: var(--border); }
-.export-menu .dash-dropdown-placeholder { color: var(--text); font-weight: 700; }
-
 /* Detector image readout, level with the "Image view" label (see rows_readout.js). */
 .field-row {
   display: flex;
@@ -442,7 +431,7 @@ h2 + .field-label, .card-head + .field-label { margin-top: 0; }
 .png-group h3 { margin: 0 0 var(--gap-label); font-size: 12px; font-weight: 700; color: var(--text); }
 .png-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; align-items: end; }
 .png-wide { grid-column: 1 / -1; }
-.png-checks { display: flex; flex-direction: column; gap: 2px; }
+.png-checks { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; }
 .png-label { display: block; margin-bottom: 4px; font-size: 12px; color: var(--text-2); }
 .png-pills { margin: 0; }
 .png-input {
@@ -457,6 +446,10 @@ h2 + .field-label, .card-head + .field-label { margin-top: 0; }
   font-size: 13px;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
+/* dcc.Input puts its className on a wrapper div; the text padding belongs to the inner <input>. */
+.png-input { padding: 0; }
+.png-input .dash-input-element { padding: 0 8px; }
+.modal .dash-dropdown-trigger { padding: 0 8px; }
 .png-input:hover { border-color: var(--text-3); }
 .png-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .png-input::placeholder { color: var(--text-3); }
@@ -532,9 +525,10 @@ h2 + .field-label, .card-head + .field-label { margin-top: 0; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.png-curve-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 6px; align-items: center; }
+.png-curve-grid { display: grid; grid-template-columns: 40px minmax(84px, 0.8fr) 1.2fr; gap: 6px; align-items: center; }
 .png-color { display: flex; align-items: center; gap: 6px; }
-.png-color .png-input { min-width: 0; font-family: var(--mono); font-size: 12px; padding: 0 6px; }
+.png-color > :not(.png-swatch) { display: none; }  /* the hex field only carries the value */
+.png-curve-label { min-width: 0; }
 .png-swatch {
   flex-shrink: 0;
   width: 32px;

@@ -66,7 +66,7 @@ ROWS_PLOT_CHROME_PX = 52
 LASER_LINES_NM = (325, 405, 532, 633, 785, 1064)
 """Popular excitation wavelengths marked on the excitation slider, from UV to NIR."""
 
-EXPORT_FORMATS = ("csv", "txt", "npy", "json", "png")
+EXPORT_FORMAT = "csv"
 
 ROWS_GRAPH_CONFIG: dict[str, object] = {"displayModeBar": False, "responsive": True, "doubleClick": False}
 
@@ -126,7 +126,7 @@ def _mode_options() -> list[dict[str, Any]]:
 PNG_OPT = "png-opt"
 """``type`` of every control in the PNG dialog; ``name`` is the :class:`PlotStyle` field it edits."""
 
-_CHECKBOX_FIELDS = frozenset({"legend_frame", "grid", "box", "transparent"})
+_CHECKBOX_FIELDS = frozenset({"legend_frame", "grid", "minor_ticks", "minor_grid", "box", "transparent"})
 _TEXT_FIELDS = frozenset({"font", "legend", "tick_direction", "x_label", "y_label"})
 _INT_FIELDS = frozenset({"dpi", "legend_cols"})
 _RANGES: dict[str, tuple[float, float]] = {
@@ -160,7 +160,7 @@ def _curve_id(label: str, field: str) -> dict[str, str]:
 
 
 def _curve_row(label: str, color: str, linestyle: str) -> html.Div:
-    """Controls of one curve: color (a picker is attached by ``assets/png_dialog.js``) and line style."""
+    """Controls of one curve: color (a picker is attached by ``assets/png_dialog.js``), line style and legend label."""
     return html.Div(
         className="png-curve",
         children=[
@@ -186,6 +186,14 @@ def _curve_row(label: str, color: str, linestyle: str) -> html.Div:
                         clearable=False,
                         searchable=False,
                     ),
+                    dcc.Input(
+                        id=_curve_id(label, "label"),
+                        type="text",
+                        value=label,
+                        placeholder="Legend label",
+                        debounce=0.3,
+                        className="png-input png-curve-label",
+                    ),
                 ],
             ),
         ],
@@ -201,9 +209,11 @@ def _curve_styles(ids: list[dict[str, str]], values: list[Any]) -> dict[str, Cur
     for label, own in fields.items():
         color = own.get("color")
         linestyle = own.get("linestyle")
+        text = own.get("label")
         styles[label] = CurveStyle(
             color=color.strip() if isinstance(color, str) and _HEX_COLOR.fullmatch(color.strip()) else None,
             linestyle=linestyle if linestyle in LINE_STYLES else None,
+            label=text.strip() if isinstance(text, str) and text.strip() else None,
         )
     return styles
 
@@ -294,7 +304,7 @@ def _png_dialog() -> html.Div:
                         "Family",
                         dcc.Dropdown(
                             id=_opt_id("font"),
-                            options=[{"label": "Auto (Arial)", "value": "auto"}],
+                            options=[{"label": "Arial", "value": "Arial"}],
                             value=defaults.font,
                             clearable=False,
                             searchable=False,
@@ -340,7 +350,15 @@ def _png_dialog() -> html.Div:
                 ),
                 _field("Tick length (pt)", _number("tick_length", 0.5)),
                 _field("Axes width (pt)", _number("axis_width", 0.1)),
-                html.Div(className="png-wide png-checks", children=[_check("box", "Box (top and right lines)"), _check("grid", "Grid", curves_only=True)]),
+                html.Div(
+                    className="png-wide png-checks",
+                    children=[
+                        _check("box", "Box"),
+                        _check("grid", "Grid", curves_only=True),
+                        _check("minor_ticks", "Minor ticks", curves_only=True),
+                        _check("minor_grid", "Minor grid", curves_only=True),
+                    ],
+                ),
             ),
             _group(
                 "Range",
@@ -587,6 +605,12 @@ def build_layout() -> html.Div:
                                     html.Code(id="formula", className="formula"),
                                 ]
                             ),
+                            html.Div(
+                                [
+                                    html.Button("Export CSV", id="result-csv", className="btn-link", n_clicks=0),
+                                    html.Button("Save PNG", id="result-png", className="btn-link", n_clicks=0),
+                                ]
+                            ),
                         ],
                     ),
                     html.Div(id="alerts"),
@@ -625,20 +649,6 @@ def build_layout() -> html.Div:
                 children=[
                     html.Div(
                         [html.Span("SpecDash", className="brand"), html.Span(f"v{__version__}", className="version")]
-                    ),
-                    html.Div(
-                        className="actions",
-                        children=[
-                            dcc.Dropdown(
-                                id="export-format",
-                                options=[{"label": fmt.upper(), "value": fmt} for fmt in EXPORT_FORMATS],
-                                value=None,
-                                placeholder="Export",
-                                clearable=False,
-                                searchable=False,
-                                className="export-menu",
-                            ),
-                        ],
                     ),
                 ],
             ),
@@ -1200,18 +1210,18 @@ def register_callbacks(app: Dash) -> None:
         except ValueError:
             return None
 
-    # The PNG dialog is opened by the Export menu (Result), and by the Save PNG buttons of the Raw inputs
+    # The PNG dialog is opened by the Save PNG buttons of the Result, Raw inputs
     # and Detector rows cards. Its target is kept in the dialog's class ("modal open target-<name>").
     reset_on_target_change = ["x_label", "y_label", "x_min", "x_max", "y_min", "y_max"]
 
     @app.callback(
-        Output("export-format", "value"),
         Output("png-modal", "className"),
         Output("png-last-target", "data"),
         Output({"type": PNG_OPT, "name": ALL}, "value", allow_duplicate=True),
-        Input("export-format", "value"),
+        Input("result-csv", "n_clicks"),
         Input("inputs-png", "n_clicks"),
         Input("rows-png", "n_clicks"),
+        Input("result-png", "n_clicks"),
         State("png-last-target", "data"),
         State({"type": PNG_OPT, "name": ALL}, "id"),
         State({"type": PNG_OPT, "name": ALL}, "value"),
@@ -1219,24 +1229,23 @@ def register_callbacks(app: Dash) -> None:
         prevent_initial_call=True,
     )
     def open_or_export(
-        fmt: str | None,
+        _csv_clicks: int | None,
         _inputs_clicks: int | None,
         _rows_clicks: int | None,
+        _result_clicks: int | None,
         last_target: str | None,
         ids: list[dict[str, str]],
         values: list[Any],
         *state: Any,
-    ) -> tuple[None, Any, Any, Any]:
+    ) -> tuple[Any, Any, Any]:
         trigger = ctx.triggered_id
-        keep = (None, no_update, no_update, [no_update] * len(ids))
-        if trigger == "export-format":
-            if fmt not in EXPORT_FORMATS:
-                raise PreventUpdate
-            target = "result" if fmt == "png" else None
-        elif not ctx.triggered or not ctx.triggered[0]["value"]:
+        keep = (no_update, no_update, [no_update] * len(ids))
+        if not ctx.triggered or not ctx.triggered[0]["value"]:
             raise PreventUpdate
+        if trigger == "result-csv":
+            target = None
         else:
-            target = "inputs" if trigger == "inputs-png" else "rows"
+            target = {"inputs-png": "inputs", "rows-png": "rows"}.get(trigger, "result")
         args, stores, signal_index = state[:8], state[8:12], state[12]
 
         if target == "rows":
@@ -1250,7 +1259,7 @@ def register_callbacks(app: Dash) -> None:
             if target is None:  # a data format: save straight away
                 quantity_key = mode.quantity(args[1]).key
                 desktop.save_bytes(
-                    f"{Path(signals[0].name).stem}_{mode.key}_{quantity_key}.{fmt}", export_bytes(result, mode, fmt)
+                    f"{Path(signals[0].name).stem}_{mode.key}_{quantity_key}.{EXPORT_FORMAT}", export_bytes(result, mode, EXPORT_FORMAT)
                 )
                 return keep
         # Labels and ranges belong to one figure; do not carry them over to another.
@@ -1258,7 +1267,7 @@ def register_callbacks(app: Dash) -> None:
         updated = [
             _form_default(i["name"]) if fresh and i["name"] in reset_on_target_change else no_update for i in ids
         ]
-        return None, f"modal open target-{target}", target, updated
+        return f"modal open target-{target}", target, updated
 
     def dialog_target(css: str) -> str | None:
         """Target of an open dialog, or ``None`` while it is closed."""
@@ -1288,8 +1297,8 @@ def register_callbacks(app: Dash) -> None:
         if dialog_target(css) is None or len(current) > 1:
             raise PreventUpdate
         installed = mplexport.available_fonts()
-        auto = {"label": "Auto (Arial)", "value": "auto"}
-        return [auto, *({"label": family, "value": family} for family in installed)]
+        families = ["Arial", *(f for f in installed if f != "Arial")]  # Arial is the default, even if it falls back
+        return [{"label": family, "value": family} for family in families]
 
     @app.callback(
         Output("png-curve-rows", "children"),
