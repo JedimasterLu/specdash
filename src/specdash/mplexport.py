@@ -18,7 +18,7 @@ from specdash.processing import Result
 FloatArray = NDArray[np.float64]
 
 _FONT_CANDIDATES = ("Arial", "Liberation Sans", "Helvetica", "Nimbus Sans", "DejaVu Sans")
-_FONT_CHOICES = ("Arial", "Helvetica", "Times New Roman", "Calibri", "Courier New", "DejaVu Sans", "DejaVu Serif")
+_FONT_CHOICES = ("Arial", "Helvetica", "Calibri", "Times New Roman")
 _DASHES = {"solid": "-", "dash": "--", "dot": ":", "dashdot": "-."}
 LINE_STYLES: dict[str, str] = {"solid": "Solid", "dash": "Dashed", "dot": "Dotted", "dashdot": "Dash-dot"}
 """Line style choices: keys are the ones used by the app's figures (see :data:`BACKGROUND_STYLES`)."""
@@ -55,10 +55,12 @@ class CurveStyle:
     Attributes:
         color: Line color as ``#rgb`` / ``#rrggbb``.
         linestyle: A key of :data:`LINE_STYLES`.
+        label: Legend label shown instead of the curve's own name.
     """
 
     color: str | None = None
     linestyle: str | None = None
+    label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -71,7 +73,7 @@ class PlotStyle:
         line_width: Line width of all curves in pt.
         line_alpha: Opacity of all curves, from 0 (invisible) to 1.
         axis_width: Axes frame and tick line width in pt.
-        font: Font family, or ``"auto"`` for Arial / the closest installed sans-serif.
+        font: Font family; falls back to the closest installed sans-serif when missing.
         label_size: Axis label font size in pt.
         tick_size: Tick label font size in pt.
         legend_size: Legend font size in pt.
@@ -82,6 +84,8 @@ class PlotStyle:
         tick_direction: ``"in"`` or ``"out"``.
         tick_length: Major tick length in pt.
         grid: Draw grid lines.
+        minor_ticks: Draw minor ticks.
+        minor_grid: Draw minor grid lines.
         box: Draw the top and right axes lines.
         x_min: Lower X limit, or ``None`` for the data range.
         x_max: Upper X limit, or ``None`` for the data range.
@@ -99,7 +103,7 @@ class PlotStyle:
     line_width: float = 0.8
     line_alpha: float = 1.0
     axis_width: float = 0.8
-    font: str = "auto"
+    font: str = "Arial"
     label_size: float = 7
     tick_size: float = 7
     legend_size: float = 6
@@ -109,6 +113,8 @@ class PlotStyle:
     tick_direction: str = "in"
     tick_length: float = 3
     grid: bool = False
+    minor_ticks: bool = False
+    minor_grid: bool = False
     box: bool = True
     x_min: float | None = None
     x_max: float | None = None
@@ -135,11 +141,11 @@ def available_fonts() -> list[str]:
     return found
 
 
-def _font(requested: str = "auto") -> str:
+def _font(requested: str = "Arial") -> str:
     """Return the requested family if installed, else Arial or the closest sans-serif."""
     from matplotlib import font_manager
 
-    candidates = (requested, *_FONT_CANDIDATES) if requested != "auto" else _FONT_CANDIDATES
+    candidates = (requested, *_FONT_CANDIDATES) if requested != "Arial" else _FONT_CANDIDATES
     for family in candidates:
         try:
             font_manager.findfont(family, fallback_to_default=False)
@@ -185,6 +191,10 @@ def _style(axes_cm: tuple[float, float] = FIG_CM, style: PlotStyle | None = None
         "savefig.transparent": style.transparent,
         "xtick.direction": style.tick_direction,
         "ytick.direction": style.tick_direction,
+        "xtick.minor.size": style.tick_length * 0.55 if style.minor_ticks else 0,
+        "ytick.minor.size": style.tick_length * 0.55 if style.minor_ticks else 0,
+        "xtick.minor.width": style.axis_width * 0.75,
+        "ytick.minor.width": style.axis_width * 0.75,
         "xtick.major.size": style.tick_length,
         "ytick.major.size": style.tick_length,
         "xtick.major.width": style.axis_width,
@@ -228,7 +238,7 @@ def png_size(content: bytes) -> tuple[int, int]:
 
 def _limits(
     result: Result, curves: dict[str, FloatArray], style: PlotStyle
-) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
+) -> tuple[tuple[float, float] | None, tuple[float | None, float | None] | None]:
     """Resolve the X and Y limits; ``None`` leaves an axis to matplotlib."""
     finite = result.x[np.isfinite(result.x)]
     xlim: tuple[float, float] | None = None
@@ -239,10 +249,8 @@ def _limits(
             low, high = float(finite.min()), float(finite.max())
         xlim = (low, high)
 
-    ylim: tuple[float, float] | None = None
-    if style.y_min is not None and style.y_max is not None and style.y_min < style.y_max:
-        ylim = (style.y_min, style.y_max)
-    elif xlim is not None and (style.x_min is not None or style.x_max is not None):
+    ylim: tuple[float | None, float | None] | None = None
+    if xlim is not None and (style.x_min is not None or style.x_max is not None):
         # Fit the Y range to the visible part of the curves, as an interactive zoom does.
         inside = (result.x >= xlim[0]) & (result.x <= xlim[1])
         parts = [y[inside & np.isfinite(y)] for y in curves.values()]
@@ -250,9 +258,14 @@ def _limits(
         if values.size:
             low, high = float(values.min()), float(values.max())
             pad = (high - low) * 0.05 or 0.5
-            ylim = (low - pad if style.y_min is None else style.y_min, high + pad if style.y_max is None else style.y_max)
-            if ylim[0] >= ylim[1]:
-                ylim = None
+            ylim = (low - pad, high + pad)
+    if style.y_min is not None or style.y_max is not None:
+        # Either side alone is fine: the other one stays automatic (``None``).
+        low = style.y_min if style.y_min is not None else (ylim[0] if ylim else None)
+        high = style.y_max if style.y_max is not None else (ylim[1] if ylim else None)
+        ylim = (low, high)
+    if ylim is not None and None not in ylim and ylim[0] >= ylim[1]:
+        ylim = None
     return xlim, ylim
 
 
@@ -316,13 +329,17 @@ def _curves_png(
                 alpha=style.line_alpha,
                 color=own.color or color,
                 ls=_DASHES.get(own.linestyle or linestyle, "-"),
-                label=label,
+                label=_mpl_text(own.label) if own.label and own.label != label else label,
             )
         xlim, ylim = _limits(result, {label: y for label, y, _, _ in curves}, style)
         if xlim:
             ax.set_xlim(xlim)
         if ylim:
-            ax.set_ylim(ylim)
+            ax.set_ylim(bottom=ylim[0], top=ylim[1])
+        if style.minor_ticks or style.minor_grid:
+            ax.minorticks_on()
+        if style.minor_grid:
+            ax.grid(True, which="minor", color="#eceef1", linewidth=max(style.axis_width * 0.4, 0.15))
         ax.set_xlabel(_mpl_text(style.x_label or result.x_label))
         ax.set_ylabel(_mpl_text(style.y_label or y_label))
         if not style.box:

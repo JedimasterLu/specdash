@@ -10,22 +10,25 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from dash import ALL, Dash, Input, Output, State, ctx, dcc, html, no_update
+import numpy as np
+from dash import ALL, Dash, Patch, Input, Output, State, ctx, dcc, html, no_update
 from dash.exceptions import PreventUpdate
 from flask import request, send_file
 
-from specdash import __version__, desktop, mplexport, store
+from specdash import __version__, desktop, fitting, mplexport, store
 from specdash.mplexport import LEGEND_LOCATIONS, LINE_STYLES, CurveStyle, PlotStyle
 from specdash.figures import (
     GRAPH_CONFIG,
     SERIES_COLORS,
     empty_figure,
+    fit_figure,
     image_ratio,
     inputs_figure,
+    mask_shapes,
     result_figure,
     rows_figure,
 )
-from specdash.io import AndorSpectrum
+from specdash.io import AndorSpectrum, legend_name
 from specdash.processing import (
     MODES,
     ROLE_LABELS,
@@ -66,7 +69,7 @@ ROWS_PLOT_CHROME_PX = 52
 LASER_LINES_NM = (325, 405, 532, 633, 785, 1064)
 """Popular excitation wavelengths marked on the excitation slider, from UV to NIR."""
 
-EXPORT_FORMATS = ("csv", "txt", "npy", "json", "png")
+EXPORT_FORMAT = "csv"
 
 ROWS_GRAPH_CONFIG: dict[str, object] = {"displayModeBar": False, "responsive": True, "doubleClick": False}
 
@@ -126,7 +129,7 @@ def _mode_options() -> list[dict[str, Any]]:
 PNG_OPT = "png-opt"
 """``type`` of every control in the PNG dialog; ``name`` is the :class:`PlotStyle` field it edits."""
 
-_CHECKBOX_FIELDS = frozenset({"legend_frame", "grid", "box", "transparent"})
+_CHECKBOX_FIELDS = frozenset({"legend_frame", "grid", "minor_ticks", "minor_grid", "box", "transparent"})
 _TEXT_FIELDS = frozenset({"font", "legend", "tick_direction", "x_label", "y_label"})
 _INT_FIELDS = frozenset({"dpi", "legend_cols"})
 _RANGES: dict[str, tuple[float, float]] = {
@@ -160,7 +163,7 @@ def _curve_id(label: str, field: str) -> dict[str, str]:
 
 
 def _curve_row(label: str, color: str, linestyle: str) -> html.Div:
-    """Controls of one curve: color (a picker is attached by ``assets/png_dialog.js``) and line style."""
+    """Controls of one curve: color (a picker is attached by ``assets/png_dialog.js``), line style and legend label."""
     return html.Div(
         className="png-curve",
         children=[
@@ -186,6 +189,14 @@ def _curve_row(label: str, color: str, linestyle: str) -> html.Div:
                         clearable=False,
                         searchable=False,
                     ),
+                    dcc.Input(
+                        id=_curve_id(label, "label"),
+                        type="text",
+                        value=label,
+                        placeholder="Legend label",
+                        debounce=0.3,
+                        className="png-input png-curve-label",
+                    ),
                 ],
             ),
         ],
@@ -201,9 +212,11 @@ def _curve_styles(ids: list[dict[str, str]], values: list[Any]) -> dict[str, Cur
     for label, own in fields.items():
         color = own.get("color")
         linestyle = own.get("linestyle")
+        text = own.get("label")
         styles[label] = CurveStyle(
             color=color.strip() if isinstance(color, str) and _HEX_COLOR.fullmatch(color.strip()) else None,
             linestyle=linestyle if linestyle in LINE_STYLES else None,
+            label=text.strip() if isinstance(text, str) and text.strip() else None,
         )
     return styles
 
@@ -294,7 +307,7 @@ def _png_dialog() -> html.Div:
                         "Family",
                         dcc.Dropdown(
                             id=_opt_id("font"),
-                            options=[{"label": "Auto (Arial)", "value": "auto"}],
+                            options=[{"label": "Arial", "value": "Arial"}],
                             value=defaults.font,
                             clearable=False,
                             searchable=False,
@@ -340,7 +353,15 @@ def _png_dialog() -> html.Div:
                 ),
                 _field("Tick length (pt)", _number("tick_length", 0.5)),
                 _field("Axes width (pt)", _number("axis_width", 0.1)),
-                html.Div(className="png-wide png-checks", children=[_check("box", "Box (top and right lines)"), _check("grid", "Grid", curves_only=True)]),
+                html.Div(
+                    className="png-wide png-checks",
+                    children=[
+                        _check("box", "Box"),
+                        _check("grid", "Grid", curves_only=True),
+                        _check("minor_ticks", "Minor ticks", curves_only=True),
+                        _check("minor_grid", "Minor grid", curves_only=True),
+                    ],
+                ),
             ),
             _group(
                 "Range",
@@ -430,6 +451,209 @@ def _png_dialog() -> html.Div:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Peak fit dialog
+# --------------------------------------------------------------------------- #
+
+
+def _fit_id(key: str) -> dict[str, str]:
+    return {"type": "fit", "key": key}
+
+
+def _fit_number(key: str, placeholder: str = "auto") -> dcc.Input:
+    return dcc.Input(id=_fit_id(key), type="number", placeholder=placeholder, debounce=0.3, className="png-input")
+
+
+def _fit_lock(key: str, locked: bool = False) -> dcc.Checklist:
+    return dcc.Checklist(id=_fit_id(key), options=[{"label": "", "value": "1"}], value=["1"] if locked else [], className="checks")
+
+
+def _fit_peak(i: int) -> html.Div:
+    """Controls of one peak: shape, then value / bounds / lock of each parameter."""
+    rows = [
+        html.Div(
+            className="fit-row",
+            children=[
+                html.Span(fitting.PARAM_LABELS[p], className="png-label", title="Gamma (Voigt) or right sigma (split)" if p == "e" else None),
+                _fit_number(f"{p}.{i}.v"),
+                _fit_number(f"{p}.{i}.lo"),
+                _fit_number(f"{p}.{i}.hi"),
+                _fit_lock(f"{p}.{i}.fix"),
+            ],
+        )
+        for p in fitting.PARAMS
+    ]
+    return html.Div(
+        id={"type": "fit-card", "i": i},
+        className="png-group",
+        style=None if i == 0 else {"display": "none"},
+        children=[
+            html.H3(f"Peak {i + 1}"),
+            dcc.Dropdown(
+                id=_fit_id(f"shape.{i}"),
+                options=[{"label": name, "value": key} for key, name in fitting.SHAPES.items()],
+                value="gauss",
+                clearable=False,
+                searchable=False,
+            ),
+            html.Div(className="fit-row fit-head", children=[html.Span(), *(html.Span(t) for t in ("Value", "Min", "Max", "Lock"))]),
+            *rows,
+        ],
+    )
+
+
+def _mask_row(index: int, low: float, high: float, active: bool) -> html.Div:
+    """One masked X region: a name (click to make it the one the plot drag edits), its limits and a remove button."""
+
+    def limit(kind: str, value: float) -> dcc.Input:
+        return dcc.Input(
+            id={"type": f"fit-mask-{kind}", "index": index}, type="number", value=float(f"{value:.6g}"), debounce=0.3, className="png-input"
+        )
+
+    return html.Div(
+        className="interval",
+        children=[
+            html.Div(
+                className="interval-head",
+                children=[
+                    html.Span(className="interval-dot", style={"background": SERIES_COLORS[index % len(SERIES_COLORS)]}),
+                    html.Button(
+                        f"Mask {index + 1}",
+                        id={"type": "fit-mask-sel", "index": index},
+                        className="interval-name fit-mask-name",
+                        n_clicks=0,
+                        title="Edit this mask by dragging on the plot",
+                    ),
+                    html.Button("×", id={"type": "fit-mask-del", "index": index}, className="chip-x", n_clicks=0, title="Remove mask"),
+                ],
+            ),
+            html.Div(className="fit-limits", children=[limit("lo", low), limit("hi", high)]),
+        ],
+    )
+
+
+def _fit_data(result: Result, masks: dict[str, Any]) -> tuple[Any, dict[str, Any], Any]:
+    """X (ascending, finite in every curve), the curves on it, and the boolean mask of the points to fit."""
+    names = list(result.curves)
+    stack = np.column_stack([result.curves[k] for k in names])
+    keep = np.isfinite(result.x) & np.isfinite(stack).all(axis=1)
+    order = np.argsort(result.x[keep])
+    x = result.x[keep][order]
+    used = np.ones(x.size, bool)  # points outside the masked regions are the ones fitted
+    for low, high in masks["ranges"]:
+        used &= ~((x >= low) & (x <= high))
+    return x, {k: result.curves[k][keep][order] for k in names}, used
+
+
+def _fit_problem(val: dict[str, Any], n: int, shapes: list[str], x: Any, y: Any, auto: bool, detected: Any = None) -> tuple[Any, Any, Any, Any]:
+    """Start values, bounds and free flags from the dialog inputs; blank values come from detection."""
+    v0 = fitting.detect(x, y, n, shapes) if detected is None else detected.copy()
+    lo, hi = fitting.default_bounds(x, y, n)
+    vary = np.ones(4 * n + 1, bool)
+    for j in range(4 * n):
+        key = f"{fitting.PARAMS[j % 4]}.{j // 4}"
+        if not auto and val[f"{key}.v"] is not None:
+            v0[j] = val[f"{key}.v"]
+        lo[j] = val[f"{key}.lo"] if val[f"{key}.lo"] is not None else lo[j]
+        hi[j] = val[f"{key}.hi"] if val[f"{key}.hi"] is not None else hi[j]
+        vary[j] = not val[f"{key}.fix"]
+        if j % 4 == 2 and shapes[j // 4] in fitting.NO_EXTRA:
+            vary[j] = False  # this shape has no extra parameter
+    if val["bg.v"] is not None and (not auto or val["bg.fix"]):
+        v0[-1] = val["bg.v"]
+    vary[-1] = not val["bg.fix"]
+    return v0, lo, hi, vary
+
+
+def _fit_dialog() -> html.Div:
+    """Build the (initially hidden) peak fit dialog: parameters on the left, plot and results on the right."""
+    controls = html.Div(
+        className="png-controls",
+        children=[
+            html.Div(
+                className="png-group",
+                children=[
+                    html.H3("Data"),
+                    html.Div(
+                        className="png-grid",
+                        children=[
+                            html.Div(className="png-wide", children=_field("Curve", dcc.Dropdown(id="fit-curve", clearable=False, searchable=False))),
+                            _field(
+                                "Peaks",
+                                dcc.Input(
+                                    id=_fit_id("n"), type="number", min=1, max=fitting.MAX_PEAKS, step=1, value=1, debounce=0.3, className="png-input"
+                                ),
+                            ),
+                            _field(
+                                "Offset (locked at 0)",
+                                html.Div(className="fit-row fit-bg", children=[dcc.Input(id=_fit_id("bg.v"), type="number", value=0, debounce=0.3, className="png-input"), _fit_lock("bg.fix", True)]),
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            html.Div(
+                className="png-group",
+                children=[
+                    html.Div(
+                        className="fit-mask-row",
+                        children=[
+                            html.H3("Masks", style={"margin": 0}),
+                            html.Button("+ Add mask", id="fit-add-mask", className="btn-link", n_clicks=0),
+                        ],
+                    ),
+                    html.Div(id="fit-mask-list", className="intervals"),
+                ],
+            ),
+            *(_fit_peak(i) for i in range(fitting.MAX_PEAKS)),
+        ],
+    )
+    preview = html.Div(
+        className="png-preview",
+        children=[
+            dcc.Graph(id="fit-graph", config=GRAPH_CONFIG, style={"height": "380px", "flex": "none"}),
+            html.Div(id="fit-results", className="fit-results"),
+        ],
+    )
+    return html.Div(
+        id="fit-modal",
+        className="modal",
+        children=[
+            dcc.Store(id="fit-csv"),
+            dcc.Store(id="fit-span"),
+            dcc.Store(id="fit-masks", data={"ranges": [], "active": 0}),
+            html.Div(id="fit-backdrop", className="modal-backdrop", n_clicks=0),
+            html.Div(
+                className="modal-card",
+                role="dialog",
+                children=[
+                    html.Div(
+                        className="modal-head",
+                        children=[
+                            html.H2("Fit peaks", className="inline"),
+                            html.Div(
+                                style={"display": "flex", "alignItems": "center", "gap": "12px"},
+                                children=[
+                                    html.Button("Auto-detect", id="fit-auto", className="btn-link", n_clicks=0),
+                                    html.Button("Fit", id="fit-run", className="btn btn-primary", n_clicks=0),
+                                ],
+                            ),
+                        ],
+                    ),
+                    html.Div(className="modal-body fit-body", children=[controls, preview]),
+                    html.Div(
+                        className="modal-foot",
+                        children=[
+                            html.Button("Close", id="fit-close", className="btn", n_clicks=0),
+                            html.Button("Save", id="fit-save", className="btn", n_clicks=0),
+                            html.Button("Batch save", id="fit-batch", className="btn", n_clicks=0, title="Fit every curve with these settings and save all results"),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    )
+
 
 def build_layout() -> html.Div:
     """Build the application layout.
@@ -476,7 +700,6 @@ def build_layout() -> html.Div:
                             html.Div(
                                 [
                                     html.Button("Save PNG", id="rows-png", className="btn-link", n_clicks=0),
-                                    html.Button("All rows", id="rows-reset", className="btn-link", n_clicks=0),
                                 ]
                             ),
                         ],
@@ -587,6 +810,14 @@ def build_layout() -> html.Div:
                                     html.Code(id="formula", className="formula"),
                                 ]
                             ),
+                            html.Div(
+                                className="head-actions",
+                                children=[
+                                    html.Button("Fit peaks", id="fit-open", className="btn-link", n_clicks=0),
+                                    html.Button("Export CSV", id="result-csv", className="btn-link", n_clicks=0),
+                                    html.Button("Save PNG", id="result-png", className="btn-link", n_clicks=0),
+                                ],
+                            ),
                         ],
                     ),
                     html.Div(id="alerts"),
@@ -626,24 +857,11 @@ def build_layout() -> html.Div:
                     html.Div(
                         [html.Span("SpecDash", className="brand"), html.Span(f"v{__version__}", className="version")]
                     ),
-                    html.Div(
-                        className="actions",
-                        children=[
-                            dcc.Dropdown(
-                                id="export-format",
-                                options=[{"label": fmt.upper(), "value": fmt} for fmt in EXPORT_FORMATS],
-                                value=None,
-                                placeholder="Export",
-                                clearable=False,
-                                searchable=False,
-                                className="export-menu",
-                            ),
-                        ],
-                    ),
                 ],
             ),
             html.Div(className="layout", children=[sidebar, main]),
             _png_dialog(),
+            _fit_dialog(),
             # Files loaded by Python (drop / browse) are announced here; see desktop.ingest.
             dcc.Store(id="dropped", data=None),
         ],
@@ -980,22 +1198,16 @@ def register_callbacks(app: Dash) -> None:
     @app.callback(
         Output("rows", "data"),
         Input(f"store-{Role.SIGNAL}", "data"),
-        Input("rows-reset", "n_clicks"),
         State("rows", "data"),
     )
     def on_rows(*args: Any) -> RowsData | None:
-        signals, _reset, current = args
+        signals, current = args
         counts = [item["n_rows"] for item in signals or []]
         if not counts:
             return None
         count = min(counts)
         if not current or current["count"] != count:
             return _full_rows(count)
-        if ctx.triggered_id == "rows-reset":  # "All rows" resets the selected interval only
-            ranges = [list(r) for r in current["ranges"]]
-            active = min(int(current.get("active", 0)), len(ranges) - 1)
-            ranges[active] = [1, count]
-            return {"count": count, "ranges": ranges, "active": active}
         return current
 
     @app.callback(
@@ -1200,18 +1412,18 @@ def register_callbacks(app: Dash) -> None:
         except ValueError:
             return None
 
-    # The PNG dialog is opened by the Export menu (Result), and by the Save PNG buttons of the Raw inputs
+    # The PNG dialog is opened by the Save PNG buttons of the Result, Raw inputs
     # and Detector rows cards. Its target is kept in the dialog's class ("modal open target-<name>").
     reset_on_target_change = ["x_label", "y_label", "x_min", "x_max", "y_min", "y_max"]
 
     @app.callback(
-        Output("export-format", "value"),
         Output("png-modal", "className"),
         Output("png-last-target", "data"),
         Output({"type": PNG_OPT, "name": ALL}, "value", allow_duplicate=True),
-        Input("export-format", "value"),
+        Input("result-csv", "n_clicks"),
         Input("inputs-png", "n_clicks"),
         Input("rows-png", "n_clicks"),
+        Input("result-png", "n_clicks"),
         State("png-last-target", "data"),
         State({"type": PNG_OPT, "name": ALL}, "id"),
         State({"type": PNG_OPT, "name": ALL}, "value"),
@@ -1219,24 +1431,23 @@ def register_callbacks(app: Dash) -> None:
         prevent_initial_call=True,
     )
     def open_or_export(
-        fmt: str | None,
+        _csv_clicks: int | None,
         _inputs_clicks: int | None,
         _rows_clicks: int | None,
+        _result_clicks: int | None,
         last_target: str | None,
         ids: list[dict[str, str]],
         values: list[Any],
         *state: Any,
-    ) -> tuple[None, Any, Any, Any]:
+    ) -> tuple[Any, Any, Any]:
         trigger = ctx.triggered_id
-        keep = (None, no_update, no_update, [no_update] * len(ids))
-        if trigger == "export-format":
-            if fmt not in EXPORT_FORMATS:
-                raise PreventUpdate
-            target = "result" if fmt == "png" else None
-        elif not ctx.triggered or not ctx.triggered[0]["value"]:
+        keep = (no_update, no_update, [no_update] * len(ids))
+        if not ctx.triggered or not ctx.triggered[0]["value"]:
             raise PreventUpdate
+        if trigger == "result-csv":
+            target = None
         else:
-            target = "inputs" if trigger == "inputs-png" else "rows"
+            target = {"inputs-png": "inputs", "rows-png": "rows"}.get(trigger, "result")
         args, stores, signal_index = state[:8], state[8:12], state[12]
 
         if target == "rows":
@@ -1250,7 +1461,7 @@ def register_callbacks(app: Dash) -> None:
             if target is None:  # a data format: save straight away
                 quantity_key = mode.quantity(args[1]).key
                 desktop.save_bytes(
-                    f"{Path(signals[0].name).stem}_{mode.key}_{quantity_key}.{fmt}", export_bytes(result, mode, fmt)
+                    f"{Path(signals[0].name).stem}_{mode.key}_{quantity_key}.{EXPORT_FORMAT}", export_bytes(result, mode, EXPORT_FORMAT)
                 )
                 return keep
         # Labels and ranges belong to one figure; do not carry them over to another.
@@ -1258,7 +1469,7 @@ def register_callbacks(app: Dash) -> None:
         updated = [
             _form_default(i["name"]) if fresh and i["name"] in reset_on_target_change else no_update for i in ids
         ]
-        return None, f"modal open target-{target}", target, updated
+        return f"modal open target-{target}", target, updated
 
     def dialog_target(css: str) -> str | None:
         """Target of an open dialog, or ``None`` while it is closed."""
@@ -1288,8 +1499,8 @@ def register_callbacks(app: Dash) -> None:
         if dialog_target(css) is None or len(current) > 1:
             raise PreventUpdate
         installed = mplexport.available_fonts()
-        auto = {"label": "Auto (Arial)", "value": "auto"}
-        return [auto, *({"label": family, "value": family} for family in installed)]
+        families = ["Arial", *(f for f in installed if f != "Arial")]  # Arial is the default, even if it falls back
+        return [{"label": family, "value": family} for family in families]
 
     @app.callback(
         Output("png-curve-rows", "children"),
@@ -1422,6 +1633,217 @@ def register_callbacks(app: Dash) -> None:
             raise PreventUpdate
         content, name = rendered
         return "modal" if desktop.save_bytes(name, content) else no_update  # stay open when the dialog was cancelled
+
+    # ---- Peak fit dialog ------------------------------------------------- #
+
+    @app.callback(
+        Output("fit-modal", "className"),
+        Output("fit-curve", "options"),
+        Output("fit-curve", "value"),
+        Input("fit-open", "n_clicks"),
+        Input("fit-close", "n_clicks"),
+        Input("fit-backdrop", "n_clicks"),
+        State("fit-curve", "value"),
+        *process_states,
+        prevent_initial_call=True,
+    )
+    def open_fit_dialog(_open: int, _close: int, _backdrop: int, curve: str | None, *state: Any) -> tuple[Any, Any, Any]:
+        if ctx.triggered_id != "fit-open":
+            return "modal", no_update, no_update
+        current = run_current(*state[:8], tuple(state[8:12]), state[12])
+        if current is None:
+            raise PreventUpdate
+        names = list(current[2].curves)
+        return "modal open", [{"label": legend_name(n), "value": n} for n in names], curve if curve in names else names[0]
+
+    @app.callback(
+        Output({"type": "fit", "key": ALL}, "value"),
+        Output("fit-graph", "figure"),
+        Output("fit-results", "children"),
+        Output("fit-csv", "data"),
+        Output("fit-span", "data"),
+        Input("fit-auto", "n_clicks"),
+        Input("fit-run", "n_clicks"),
+        State({"type": "fit", "key": ALL}, "id"),
+        State({"type": "fit", "key": ALL}, "value"),
+        State("fit-curve", "value"),
+        State("fit-masks", "data"),
+        *process_states,
+        prevent_initial_call=True,
+    )
+    def run_fit(
+        _auto: int, _run: int, ids: list[dict[str, str]], values: list[Any], curve: str | None, masks: dict[str, Any], *state: Any
+    ) -> tuple[Any, Any, Any, Any, Any]:
+        """Auto-detect start values, or fit the chosen curve; fitted values are written back to the inputs."""
+        keys = [i["key"] for i in ids]
+        val = dict(zip(keys, values, strict=True))
+        current = run_current(*state[:8], tuple(state[8:12]), state[12])
+        if current is None or curve not in current[2].curves:
+            raise PreventUpdate
+        result = current[2]
+        x, curves, used = _fit_data(result, masks)
+        y = curves[curve]
+        auto_run = ctx.triggered_id == "fit-auto"
+        n = min(max(int(val["n"] or 1), 1), fitting.MAX_PEAKS)
+        detected, svd_note = None, None
+        if auto_run and len(curves) > 1 and used.sum() > len(curves):
+            # Several curves: the SVD of the whole set gives the number of components, and the
+            # mean of the normalized curves the start values.
+            count, sv = fitting.svd_components(np.column_stack([c[used] for c in curves.values()]))
+            n = min(count, fitting.MAX_PEAKS)
+            svd_note = f"SVD of {len(curves)} curves: {count} component(s); σ/σ₁ = " + ", ".join(f"{v / sv[0]:.3g}" for v in sv[:6])
+        if used.sum() < 4 * n + 2:
+            return [no_update] * len(ids), no_update, html.Div("Too few points in the fit range.", className="alert alert-error"), no_update, no_update
+        shapes = [val[f"shape.{i}"] or "gauss" for i in range(n)]
+        if svd_note:
+            mean = np.mean([c[used] / max(np.abs(c[used]).max(), 1e-300) for c in curves.values()], axis=0)
+            detected = fitting.detect(x[used], mean, n, shapes)
+            scale = float(np.max(y[used]) / max(mean.max(), 1e-300))
+            detected[3 : 4 * n : 4] *= scale
+            detected[-1] *= scale
+        v0, lo, hi, vary = _fit_problem(val, n, shapes, x[used], y[used], auto_run, detected)
+        outcome = fitting.fit(x[used], y[used], shapes, v0, lo, hi, vary, max_iter=0 if auto_run else 300)
+        # Show the curves over the whole range; the statistics above are those of the fitted points.
+        outcome = replace(
+            outcome, x=x, y=y, fit=fitting.model(shapes, outcome.values, x), parts=fitting.components(shapes, outcome.values, x)
+        )
+
+        out: list[Any] = [no_update] * len(ids)
+        for j in range(4 * n):
+            out[keys.index(f"{fitting.PARAMS[j % 4]}.{j // 4}.v")] = float(outcome.values[j])
+        out[keys.index("bg.v")] = float(outcome.values[-1])
+        if svd_note:
+            out[keys.index("n")] = n
+        rows = [
+            html.Tr([html.Td(fitting.param_name(j, n)), html.Td(f"{outcome.values[j]:.6g}"), html.Td("fixed" if not outcome.vary[j] else f"{outcome.errors[j]:.2g}")])
+            for j in range(4 * n + 1)
+            if outcome.vary[j] or j % 4 != 2 or shapes[j // 4] not in fitting.NO_EXTRA or j == 4 * n
+        ]
+        summary = f"R² = {outcome.r2:.5f} · χ² = {outcome.chi2:.5g} · AIC = {outcome.aic:.1f} · BIC = {outcome.bic:.1f}"
+        shown = [
+            html.Div(summary, className="muted small") if not auto_run else html.Div("Start values (not fitted yet)", className="muted small"),
+            *([html.Div(svd_note, className="muted small")] if svd_note else []),
+            *(html.Div(w, className="alert") for w in outcome.warnings),
+            html.Table([html.Thead(html.Tr([html.Th("Parameter"), html.Th("Value"), html.Th("± Error")])), html.Tbody(rows)], className="fit-table"),
+        ]
+        return out, fit_figure(result, outcome, masks["ranges"], masks["active"]), shown, fitting.to_csv(outcome, shapes, result.x_label, used, lo, hi), [float(x[0]), float(x[-1])]
+
+    @app.callback(
+        Output({"type": "fit-card", "i": ALL}, "style"),
+        Input(_fit_id("n"), "value"),
+    )
+    def show_peak_cards(count: int | None) -> list[dict[str, str] | None]:
+        return [None if i < min(max(int(count or 1), 1), fitting.MAX_PEAKS) else {"display": "none"} for i in range(fitting.MAX_PEAKS)]
+
+    @app.callback(Output("fit-mask-list", "children"), Input("fit-masks", "data"))
+    def render_masks(masks: dict[str, Any]) -> Any:
+        if not masks["ranges"]:
+            return html.Div("Drag on the plot to select a region to exclude from the fit.", className="muted small")
+        return [_mask_row(i, low, high, i == masks["active"]) for i, (low, high) in enumerate(masks["ranges"])]
+
+    @app.callback(
+        Output("fit-masks", "data", allow_duplicate=True),
+        Input("fit-add-mask", "n_clicks"),
+        Input({"type": "fit-mask-lo", "index": ALL}, "value"),
+        Input({"type": "fit-mask-hi", "index": ALL}, "value"),
+        Input({"type": "fit-mask-sel", "index": ALL}, "n_clicks"),
+        Input({"type": "fit-mask-del", "index": ALL}, "n_clicks"),
+        State("fit-masks", "data"),
+        State("fit-span", "data"),
+        prevent_initial_call=True,
+    )
+    def edit_masks(
+        _add: int, lows: list[Any], highs: list[Any], _sel: list[int | None], _del: list[int | None], masks: dict[str, Any], span: list[float] | None
+    ) -> dict[str, Any]:
+        """Add, edit, select or remove a masked X region (dragging on the plot is handled by assets/fit_select.js)."""
+        ranges, active = [list(r) for r in masks["ranges"]], masks["active"]
+        trigger = ctx.triggered_id
+        if not ctx.triggered or not ctx.triggered[0]["value"] or not span:
+            raise PreventUpdate
+        if trigger == "fit-add-mask":
+            mid, half = (span[0] + span[1]) / 2, (span[1] - span[0]) / 20
+            ranges.append([mid - half, mid + half])
+            active = len(ranges) - 1
+        elif isinstance(trigger, dict):
+            index = trigger["index"]
+            if trigger["type"] == "fit-mask-del":
+                del ranges[index]
+                active = max(0, min(active, len(ranges) - 1))
+            elif trigger["type"] == "fit-mask-sel":
+                active = index
+            elif lows[index] is not None and highs[index] is not None:
+                ranges[index], active = sorted([lows[index], highs[index]]), index
+        if ranges == masks["ranges"] and active == masks["active"]:
+            raise PreventUpdate
+        return {"ranges": ranges, "active": active}
+
+    @app.callback(
+        Output("fit-graph", "figure", allow_duplicate=True),
+        Input("fit-masks", "data"),
+        State("fit-graph", "figure"),
+        prevent_initial_call=True,
+    )
+    def draw_masks(masks: dict[str, Any], figure: dict[str, Any] | None) -> Any:
+        """Redraw the mask bands of the fit plot."""
+        if not figure or not figure.get("data"):
+            raise PreventUpdate
+        patch = Patch()
+        patch["layout"]["shapes"] = mask_shapes(masks["ranges"], masks["active"])
+        patch["layout"]["meta"] = {"active": masks["active"]}
+        return patch
+
+    @app.callback(
+        Output("fit-modal", "className", allow_duplicate=True),
+        Input("fit-save", "n_clicks"),
+        State("fit-csv", "data"),
+        State("fit-curve", "value"),
+        prevent_initial_call=True,
+    )
+    def save_fit(clicks: int | None, tables: dict[str, str] | None, curve: str | None) -> Any:
+        """Save the curves table, and the parameter table next to it as ``<name>_params.csv``."""
+        if not clicks or not tables:
+            raise PreventUpdate
+        saved = desktop.save_bytes(f"{Path(curve or 'fit').stem}_fit.csv", tables["curves"].encode())
+        if saved:
+            saved.with_name(f"{saved.stem}_params{saved.suffix}").write_text(tables["params"], encoding="utf-8")
+        return no_update
+
+    @app.callback(
+        Output("fit-modal", "className", allow_duplicate=True),
+        Input("fit-batch", "n_clicks"),
+        State({"type": "fit", "key": ALL}, "id"),
+        State({"type": "fit", "key": ALL}, "value"),
+        State("fit-curve", "value"),
+        State("fit-masks", "data"),
+        *process_states,
+        prevent_initial_call=True,
+    )
+    def batch_save(clicks: int | None, ids: list[dict[str, str]], values: list[Any], curve: str | None, masks: dict[str, Any], *state: Any) -> Any:
+        """Fit every curve with the dialog's settings and save all results (wide curves table + long parameter table)."""
+        val = {i["key"]: v for i, v in zip(ids, values, strict=True)}
+        current = run_current(*state[:8], tuple(state[8:12]), state[12])
+        if not clicks or current is None or curve not in current[2].curves:
+            raise PreventUpdate
+        result = current[2]
+        x, curves, used = _fit_data(result, masks)
+        n = min(max(int(val["n"] or 1), 1), fitting.MAX_PEAKS)
+        shapes = [val[f"shape.{i}"] or "gauss" for i in range(n)]
+        if used.sum() < 4 * n + 2:
+            raise PreventUpdate
+        reference = float(np.max(curves[curve][used])) or 1.0
+        fits: dict[str, Any] = {}
+        bounds: dict[str, Any] = {}
+        for name, y in curves.items():
+            v0, lo, hi, vary = _fit_problem(val, n, shapes, x[used], y[used], False)
+            v0[3 : 4 * n : 4] *= float(np.max(y[used])) / reference  # the inputs describe the selected curve
+            r = fitting.fit(x[used], y[used], shapes, v0, lo, hi, vary)
+            bounds[name] = (lo, hi)
+            fits[name] = replace(r, x=x, y=y, fit=fitting.model(shapes, r.values, x), parts=fitting.components(shapes, r.values, x))
+        tables = fitting.batch_csv(fits, shapes, result.x_label, used, bounds)
+        saved = desktop.save_bytes(f"{Path(curve).stem}_batch_fit.csv", tables["curves"].encode())
+        if saved:
+            saved.with_name(f"{saved.stem}_params{saved.suffix}").write_text(tables["params"], encoding="utf-8")
+        return no_update
 
 
 PLOTLY_URL = "/_dash-component-suites/plotly/package_data/plotly.min.js"

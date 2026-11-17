@@ -50,9 +50,9 @@ Missing optional inputs are treated as zero, and the app shows a warning when th
 - Interactive plots (zoom, pan, hover crosshair, SVG snapshot from the mode bar).
 - X axis in wavelength, photon energy or Raman shift (configurable excitation wavelength).
 - Optional Savitzky–Golay smoothing and detector-row selection.
-- Export the processed curves, plus the normalized inputs, as CSV, TXT, NPY or JSON through a native Save dialog.
-- Export **PNG** figures with a style dialog and live preview. **Export → PNG** (Result curves), **Save PNG** in the
-  Raw inputs card and **Save PNG** in the Detector rows card (the image with the selected rows outlined in blue) all
+- Export the processed curves, plus the normalized inputs, as CSV through a native Save dialog (**Export CSV** in the Result card).
+- Export **PNG** figures with a style dialog and live preview. **Save PNG** in the Result card,
+  **Save PNG** in the Raw inputs card and **Save PNG** in the Detector rows card (the image with the selected rows outlined in blue) all
   open it. You can set the axes size, line and axes widths, font and font sizes, legend position and frame, tick
   direction and length, grid, box, axis ranges and labels, resolution and a transparent background; **Reset** restores
   the defaults. The defaults are a publication style (Arial 7 pt, 4.5 × 3.5 cm axes, inward ticks, 600 dpi), drawn by
@@ -79,7 +79,7 @@ git tag v0.3.0 && git push origin v0.3.0
 ```
 
 - **Windows**: PyInstaller one-folder bundle ([packaging/specdash.spec](packaging/specdash.spec)).
-- **macOS**: py2app `.app` bundle ([packaging/setup_macos.py](packaging/setup_macos.py)).
+- **macOS**: PyInstaller `.app` bundle (Apple silicon), built from the same spec.
 
 Each job runs `SpecDash --selftest` on the built bundle (serves every script, parses a spectrum, renders both PNGs),
 zips the result and attaches it to the GitHub Release. The workflow can also be started manually from the Actions tab;
@@ -89,6 +89,6 @@ To build locally:
 
 ```bash
 uv sync --no-dev --group build
-uv run --no-sync pyinstaller packaging/specdash.spec --noconfirm        # Windows -> dist/SpecDash/
-(cd packaging && uv run --no-sync python setup_macos.py py2app --dist-dir ../dist)   # macOS -> dist/SpecDash.app
+uv run --no-sync python packaging/make_icns.py                          # macOS only: app icon
+uv run --no-sync pyinstaller packaging/specdash.spec --noconfirm        # Windows -> dist/SpecDash/, macOS -> dist/SpecDash.app
 ```

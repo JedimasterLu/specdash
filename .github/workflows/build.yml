@@ -63,29 +63,30 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
+          enable-cache: true
 
+      # Same locked, runtime-only environment as the Windows job.
       - name: Install dependencies
-        run: python -m pip install . py2app
+        run: uv sync --no-dev --group build
 
       - name: Check tag matches package version
         if: github.ref_type == 'tag'
         run: |
-          pkg=$(python -c "import specdash; print(specdash.__version__)")
+          pkg=$(uv run --no-sync python -c "import specdash; print(specdash.__version__)")
           [ "v$pkg" = "$VERSION" ] || { echo "Tag $VERSION does not match specdash.__version__ ($pkg)"; exit 1; }
 
-      - name: Build with py2app
+      - name: Build with PyInstaller
         run: |
-          python packaging/make_icns.py
-          # Run from packaging/: py2app rejects the install_requires that setuptools
-          # derives from the pyproject.toml in the repository root.
-          (cd packaging && python setup_macos.py py2app --dist-dir ../dist)
-          python packaging/postprocess_macos.py dist/SpecDash.app
+          uv run --no-sync python packaging/make_icns.py
+          uv run --no-sync pyinstaller packaging/specdash.spec --noconfirm
 
       - name: Verify code signature
         run: codesign --verify --deep --strict --verbose=2 dist/SpecDash.app
+
+      - name: Report size
+        run: du -sh dist/SpecDash.app
 
       - name: Self-test
         run: dist/SpecDash.app/Contents/MacOS/SpecDash --selftest || { cat ~/Library/Logs/SpecDash/specdash.log 2>/dev/null; exit 1; }
